@@ -176,12 +176,10 @@ export class iDotMatrix {
    * @returns {Promise<boolean>} True if connected/reconnected, false otherwise
    */
   async #ensureConnection() {
-    // 1. Si on est déjà connecté, tout va bien
     if (this.device && this.device.gatt.connected) {
       return true;
     }
     
-    // 2. Si aucun appareil n'a été appairé au préalable, on ne peut rien faire
     if (!this.device) {
       console.error("[Matrix] Cannot auto-reconnect: No device has been paired yet.");
       return false;
@@ -190,15 +188,12 @@ export class iDotMatrix {
     console.warn("[Matrix] Connection lost or not established. Attempting automatic reconnection...");
 
     try {
-      // 3. Tentative de reconnexion au serveur GATT
       this.server = await this.device.gatt.connect();
       
-      // 4. Récupération des services et caractéristiques via tes constantes privées
       this.service = await this.server.getPrimaryService(this.#SERVICE_UUID);
       this.writeChar = await this.service.getCharacteristic(this.#WRITE_CHAR_UUID);
       this.notifyChar = await this.service.getCharacteristic(this.#NOTIFY_CHAR_UUID);
 
-      // 5. Ré-abonnement aux notifications avec ton wrapper lié
       this._boundIconValuechanged = this.#event_characteristicvaluechanged.bind(this);  
       await this.notifyChar.startNotifications();
       this.notifyChar.addEventListener('characteristicvaluechanged', this._boundIconValuechanged);
@@ -208,7 +203,6 @@ export class iDotMatrix {
     } catch (error) {
       console.error("[Matrix] Automatic reconnection failed:", error);
       
-      // Nettoyage des propriétés en cas d'échec pour éviter un état hybride instable
       try {
         await this.device.gatt.disconnect();
       } catch (e) {}
@@ -258,46 +252,46 @@ export class iDotMatrix {
    * @param {Event} event - The characteristic value changed event
    */
   async #event_characteristicvaluechanged(event) {
-    const value = new Uint8Array(event.target.value.buffer);
+    const buffer = new Uint8Array(event.target.buffer.buffer);
     
-    // 1. Effect / Animation Response (0x03, 0x02)
-    if (value.length >= 5 && value[2] === 3 && value[3] === 2) {
-      if (value[4] === 1) {
+    // Effect / Animation Response (0x03, 0x02)
+    if (buffer.length >= 5 && buffer[2] === 3 && buffer[3] === 2) {
+      if (buffer[4] === 1) {
         console.info("[Matrix] MULTCPOK : Effect applied");
-      } else if (value[4] === 0) {
+      } else if (buffer[4] === 0) {
         console.warn("[Matrix] ERROR : Effect Rejected");
       }
       return;
     }
 
-    // 2. Clock Style / Configuration Response (0x06, 0x01)
-    if (value.length >= 5 && value[2] === 6 && value[3] === 1) {
-      if (value[4] === 1) {
+    // Clock Style / Configuration Response (0x06, 0x01)
+    if (buffer.length >= 5 && buffer[2] === 6 && buffer[3] === 1) {
+      if (buffer[4] === 1) {
         console.info("[Matrix] Clock Style applied successfully");
       } else {
-        console.warn("[Matrix] Clock Style application failed or unknown:", value[4]);
+        console.warn("[Matrix] Clock Style application failed or unknown:", buffer[4]);
       }
       return;
     }
 
-    // 3. Calendar / Time Synchronization Response (0x01, 128)
-    if (value.length >= 5 && value[2] === 1 && value[3] === 128) {
+    // Calendar / Time Synchronization Response (0x01, 128)
+    if (buffer.length >= 5 && buffer[2] === 1 && buffer[3] === 128) {
       // The packet is 9 bytes long on complete success
       console.info("[Matrix] Calendar/Time synced and acknowledged by device");
       return;
     }
 
-    // 4. Active Screen Display Status Response (0x03, 0x00) -> From askStatus()
-    if (value.length >= 5 && value[2] === 3 && value[3] === 0) {
+    // Active Screen Display Status Response (0x03, 0x00) -> From askStatus()
+    if (buffer.length >= 5 && buffer[2] === 3 && buffer[3] === 0) {
       const modes = { 0: "Clock/Widget Mode", 1: "Cloud/Internal Animation", 3: "DIY/Graffiti/Live Pixel Mode" };
-      const activeMode = modes[value[4]] || `Unknown Mode (${value[4]})`;
+      const activeMode = modes[buffer[4]] || `Unknown Mode (${buffer[4]})`;
       console.info(`[Matrix] Current active screen mode is: ${activeMode}`);
       return;
     }
 
-    // 5. Power-Saving Eco Mode Configuration Response (0x02, 128) -> From setEcoMode()
-    if (value.length >= 5 && value[2] === 2 && value[3] === 128) {
-      if (value[4] === 1) {
+    // Power-Saving Eco Mode Configuration Response (0x02, 128) -> From setEcoMode()
+    if (buffer.length >= 5 && buffer[2] === 2 && buffer[3] === 128) {
+      if (buffer[4] === 1) {
         console.info("[Matrix] Eco Mode schedule configured and active");
       } else {
         console.info("[Matrix] Eco Mode schedule updated or disabled");
@@ -305,20 +299,20 @@ export class iDotMatrix {
       return;
     }
 
-    // 6. Device Lifecycle / Factory Reset Response (0x03, 128) -> From deleteDeviceData()
-    if (value.length >= 4 && value[2] === 3 && value[3] === 128) {
+    // Device Lifecycle / Factory Reset Response (0x03, 128) -> From deleteDeviceData()
+    if (buffer.length >= 4 && buffer[2] === 3 && buffer[3] === 128) {
       console.warn("[Matrix] FACTORY RESET ACKNOWLEDGED : Device is wiping data and rebooting...");
       return;
     }
 
-    // 7. Security / Password Management Response (0x04, 0x02 or 0x05, 0x02) -> From Password system
-    if (value.length >= 5 && value[3] === 2) {
-      if (value[2] === 4) {
-        console.info(`[Matrix] Password Management applied. Action success state: ${value[4] === 1 ? "SUCCESS" : "FAILED"}`);
+    // Security / Password Management Response (0x04, 0x02 or 0x05, 0x02) -> From Password system
+    if (buffer.length >= 5 && buffer[3] === 2) {
+      if (buffer[2] === 4) {
+        console.info(`[Matrix] Password Management applied. Action success state: ${buffer[4] === 1 ? "SUCCESS" : "FAILED"}`);
         return;
       }
-      if (value[2] === 5) {
-        if (value[4] === 1) {
+      if (buffer[2] === 5) {
+        if (buffer[4] === 1) {
           console.info("[Matrix] Password Verification: AUTHENTICATED");
         } else {
           console.error("[Matrix] Password Verification: INVALID PIN CODE");
@@ -327,18 +321,43 @@ export class iDotMatrix {
       }
     }
 
-    // 8. Screen Sleep Timeout Read Response (0x0F, 128) -> From readScreenLight()
-    if (value.length >= 5 && value[2] === 15 && value[3] === 128) {
-      if (value[4] !== 255) {
-        console.info(`[Matrix] Screen sleep timeout value received: ${value[4]} minutes`);
+    // Screen Sleep Timeout Read Response (0x0F, 128) -> From readScreenLight()
+    if (buffer.length >= 5 && buffer[2] === 15 && buffer[3] === 128) {
+      if (buffer[4] !== 255) {
+        console.info(`[Matrix] Screen sleep timeout buffer received: ${buffer[4]} minutes`);
       } else {
         console.warn("[Matrix] Device returned empty read placeholder (0xFF)");
       }
       return;
     }
 
+    // Test 
+    if (buffer.length >= 9 && buffer[2] === 0x01 && buffer[3] === 0x80) {
+      console.log("==============");
+      console.log(buffer);
+      console.log("==============");
+
+      const mcuVersionMajor = buffer[4];
+      const mcuVersionMinor = buffer[5];
+      const isScreenOn = buffer[6] === 1;
+      const screenType = buffer[7];
+      const isPasswordProtected = buffer[8] === 1;
+      
+      console.log(`[Matrix] Firmware: ${mcuVersionMajor}.${mcuVersionMinor}`);
+      console.log(`[Matrix] Screen On: ${isScreenOn}`);
+      console.log(`[Matrix] Protected by password: ${isPasswordProtected}`);
+
+      this.isPasswordProtected = isPasswordProtected;
+      
+      if (isPasswordProtected) {
+        this.emit('passwordRequired');
+      }
+
+      return;
+    }
+
     // Fallback log if the buffer is an unknown mystical voodoo
-    console.info("Received Buffer", value);
+    console.info("Received Buffer", buffer);
   }
 
   /**
@@ -441,7 +460,7 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async setBrightness(level) {
-    const payload = new Uint8Array([0x05, 0x00, 0x04, this.#MIN_VALUE, Math.clamp(level, 5, 100)]);
+    const payload = new Uint8Array([0x05, 0x00, 0x04, this.#MIN_VALUE, this.clamp(level, 5, 100)]);
     return await this.send(payload);
   }
 
@@ -455,9 +474,9 @@ export class iDotMatrix {
   async setFullscreenColor(r, g, b) {
     const payload = new Uint8Array([
       0x07, 0x00, 0x02, 0x02,
-      Math.clamp(r, 0, 255),
-      Math.clamp(g, 0, 255),
-      Math.clamp(b, 0, 255),
+      this.clamp(r, 0, 255),
+      this.clamp(g, 0, 255),
+      this.clamp(b, 0, 255),
     ]);
     return await this.send(payload);
   }
@@ -470,7 +489,7 @@ export class iDotMatrix {
   async setImageMode(mode = 1) {
     const payload = new Uint8Array([
       0x05, 0x00, 0x04, 0x01, 
-      Math.clamp(mode, 0, 255)
+      this.clamp(mode, 0, 255)
     ]);
     return await this.send(payload);
   }
@@ -488,11 +507,11 @@ export class iDotMatrix {
   async setPixel(x = 0, y = 0, r = 127, g = 127, b = 127, asyncMode = false) {
     const payload = new Uint8Array([
       10, 0x00, 0x05, 0x01, 0x00,
-      Math.clamp(r, 0, 255),
-      Math.clamp(g, 0, 255),
-      Math.clamp(b, 0, 255),
-      Math.clamp(x, 0, (this.width ?? 16) - 1),
-      Math.clamp(y, 0, (this.height ?? 16) - 1),
+      this.clamp(r, 0, 255),
+      this.clamp(g, 0, 255),
+      this.clamp(b, 0, 255),
+      this.clamp(x, 0, (this.width ?? 16) - 1),
+      this.clamp(y, 0, (this.height ?? 16) - 1),
     ]);
     return await (asyncMode ? this.sendAsync(payload) : this.send(payload));
   }
@@ -518,8 +537,8 @@ export class iDotMatrix {
 
     const payload = new Uint8Array([
       (rgbValues.length * 3) + 7, 0x00, 0x03, 0x02,
-      Math.clamp(style, 0, 6),
-      Math.clamp(speed, 1, 100),
+      this.clamp(style, 0, 6),
+      this.clamp(speed, 1, 100),
       rgbValues.length,
       ...rgbValues.flat()
     ]);
@@ -534,8 +553,8 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async setScoreboard(score1 = 0, score2 = 0) {
-    const s1 = Math.clamp(score1, 0, 999);
-    const s2 = Math.clamp(score2, 0, 999);
+    const s1 = this.clamp(score1, 0, 999);
+    const s2 = this.clamp(score2, 0, 999);
 
     const payload = new Uint8Array([
       0x08, 0x00, 0x0A, this.#MIN_VALUE,
@@ -553,7 +572,7 @@ export class iDotMatrix {
   async setChronograph(mode = 0) {
     const payload = new Uint8Array([
       0x05, 0x00, 0x09, this.#MIN_VALUE,
-      Math.clamp(mode, 0, 3)
+      this.clamp(mode, 0, 3)
     ]);
     return await this.send(payload);
   }
@@ -581,9 +600,9 @@ export class iDotMatrix {
   async setCountdown(mode = 0, minutes = 0, seconds = 0) {
     const payload = new Uint8Array([
       0x07, 0x00, 0x08, this.#MIN_VALUE,
-      Math.clamp(mode, 0, 3),
-      Math.clamp(minutes, 0, 255),
-      Math.clamp(seconds, 0, 59),
+      this.clamp(mode, 0, 3),
+      this.clamp(minutes, 0, 255),
+      this.clamp(seconds, 0, 59),
     ]);
     return await this.send(payload);
   }
@@ -638,7 +657,7 @@ export class iDotMatrix {
   // [TODO | DEBUG] : Idk, it's not working ?
   async setMicType(type) {
     const payload = new Uint8Array([
-      0x06, 0x00, 0x0B, this.#MIN_VALUE, // ← this one must be -128 in the app
+      0x06, 0x00, 0x0B, this.#MIN_VALUE,
       Math.max(0, Math.min(1, type))
     ]);
     return await this.send(payload);
@@ -1186,5 +1205,19 @@ export class iDotMatrix {
       await this.sendAsync(chunk, 10);
       await this.Wait(150);
     }
+  }
+
+  /**
+   * [EXPERIMENTAL] Configures the joint display positioning or screen transition effects.
+   * @note This feature is currently experimental. Its exact hardware behavior and 
+   * side-effects are not completely verified.
+   * @param {number} mode - The hardware joint mode index or position configuration
+   * @returns {Promise<void>}
+   */
+  async sendJoint(mode) {
+    console.warn("[Matrix] Calling experimental method 'sendJoint()'. Behavior might be unstable.");
+    
+    const payload = new Uint8Array([5, 0, 12, this.#MIN_VALUE, mode & 0xFF]);
+    await this.send(payload);
   }
 }
