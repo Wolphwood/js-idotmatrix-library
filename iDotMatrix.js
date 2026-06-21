@@ -409,11 +409,7 @@ export class iDotMatrix {
 
     // Power-Saving Eco Mode Configuration Response (0x02, 128) -> From setEcoMode()
     if (buffer.length >= 5 && buffer[2] === 2 && buffer[3] === 128) {
-      if (buffer[4] === 1) {
-        console.info("[Matrix] Eco Mode schedule configured and active");
-      } else {
-        console.info("[Matrix] Eco Mode schedule updated or disabled");
-      }
+      if (buffer[4] === 1) console.info("[Matrix] Eco Mode schedule updated");
       return;
     }
 
@@ -660,8 +656,8 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async setEffect(style, speed, rgbValues) {
-    if (!rgbValues.length.between(2, 7)) return this.#error(`setEffect must have between 2 and 7 colors.`);
-
+    if (!(rgbValues.length >= 2 && rgbValues.length <= 7)) return this.#error(`setEffect must have between 2 and 7 colors.`);
+    
     const payload = new Uint8Array([
       (rgbValues.length * 3) + 7, 0x00, 0x03, 0x02,
       this.clamp(style, 0, 6),
@@ -881,9 +877,10 @@ export class iDotMatrix {
     this.#isWritingRythm = true;
 
     try {
-      await (this.canAsync() ? this.sendAsync(payload) : this.send(payload));
+      await this.sendAsync(payload);
     } catch (err) {
-      this.#error("[GATT Bypass] Audio frame dropped to prevent lagging");
+      console.warn("[GATT Bypass] Audio frame dropped to prevent lagging");
+      console.error(err)
     } finally {
       this.#isWritingRythm = false;
 
