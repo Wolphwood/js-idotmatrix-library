@@ -660,8 +660,8 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async setEffect(style, speed, rgbValues) {
-    if (!rgbValues.length.between(2, 7)) return this.#error(`setEffect must have between 2 and 7 colors.`);
-
+    if (!(rgbValues.length >= 2 && rgbValues.length <= 7)) return this.#error(`setEffect must have between 2 and 7 colors.`);
+    
     const payload = new Uint8Array([
       (rgbValues.length * 3) + 7, 0x00, 0x03, 0x02,
       this.clamp(style, 0, 6),
