@@ -790,16 +790,16 @@ export class iDotMatrix {
     return await this.send(payload);
   }
 
-  #isWritingRhythm = false;
-  #nextRhythmPayload = null;
+  #isWritingRythm = false;
+  #nextRythmPayload = null;
 
   // [TODO | DEBUG] Still have : Uncaught (in promise) NetworkError: GATT operation already in progress.
   /**
-   * Unified routing method for rhythm simulation (Modeled after the APK)
+   * Unified routing method for rythm simulation (Modeled after the APK)
    * @param {number} globalMode - Mode from 0 to 9 (0-4: Software, 5-9: Hardware)
    * @param {number} currentVolumeIntensity - Global intensity of the simulated volume (0 to 1)
    */
-  sendRhythmSimulation(globalMode, currentVolumeIntensity = 0) {
+  sendRythmSimulation(globalMode, currentVolumeIntensity = 0) {
     if (globalMode >= 5) {
       const animIndex = globalMode - 4;
       const frame = Math.floor(currentVolumeIntensity * 6) + 1;
@@ -810,11 +810,11 @@ export class iDotMatrix {
         Math.max(1, Math.min(5, animIndex))
       ]);
 
-      if (this.#isWritingRhythm) {
-        this.#nextRhythmPayload = payload;
+      if (this.#isWritingRythm) {
+        this.#nextRythmPayload = payload;
         return;
       }
-      this.#_executeRhythmWrite(payload);
+      this.#_executeRythmWrite(payload);
 
     } else {
       const heights = Array.from({ length: 32 }, (_, i) => {
@@ -822,12 +822,12 @@ export class iDotMatrix {
         return Math.floor(Math.max(0, Math.min(15, wave * currentVolumeIntensity)));
       });
 
-      this.sendCustomRhythm(globalMode, heights);
+      this.sendCustomRythm(globalMode, heights);
     }
   }
 
   /**
-   * Sends a rhythm pulse to the selected hardware animation
+   * Sends a rythm pulse to the selected hardware animation
    * @param {number} animIndex - The hardware animation index (1 to 5)
    * @param {number} frame - The movement state / pose (1 to 7)
    */
@@ -838,11 +838,11 @@ export class iDotMatrix {
       Math.max(0, Math.min(5, animIndex))
     ]);
 
-    if (this.#isWritingRhythm) {
-      this.#nextRhythmPayload = payload;
+    if (this.#isWritingRythm) {
+      this.#nextRythmPayload = payload;
       return;
     }
-    this.#_executeRhythmWrite(payload);
+    this.#_executeRythmWrite(payload);
   }
 
   /**
@@ -850,7 +850,7 @@ export class iDotMatrix {
    * @param {number} style - The equalizer style interpreted by the matrix (0 to 4)
    * @param {Array<number>} rawHeights - Array of 32 heights (values from 0 to 15) for the columns
    */
-  sendCustomRhythm(style, rawHeights) {
+  sendCustomRythm(style, rawHeights) {
     const heights = Array.from({ length: 32 }, (_, i) => Math.max(0, Math.min(15, rawHeights[i] || 0)));
     
     const bArr = new Uint8Array(16);
@@ -865,41 +865,41 @@ export class iDotMatrix {
       ...bArr
     ]);
 
-    if (this.#isWritingRhythm) {
-      this.#nextRhythmPayload = payload;
+    if (this.#isWritingRythm) {
+      this.#nextRythmPayload = payload;
       return;
     }
 
-    this.#_executeRhythmWrite(payload);
+    this.#_executeRythmWrite(payload);
   }
 
   /**
    * Internal: Handles the physical transmission loop on the Bluetooth characteristic
    * @private
    */
-  async #_executeRhythmWrite(payload) {
-    this.#isWritingRhythm = true;
+  async #_executeRythmWrite(payload) {
+    this.#isWritingRythm = true;
 
     try {
       await (this.canAsync() ? this.sendAsync(payload) : this.send(payload));
     } catch (err) {
       this.#error("[GATT Bypass] Audio frame dropped to prevent lagging");
     } finally {
-      this.#isWritingRhythm = false;
+      this.#isWritingRythm = false;
 
-      if (this.#nextRhythmPayload) {
-        const nextPayload = this.#nextRhythmPayload;
-        this.#nextRhythmPayload = null;
-        this.#_executeRhythmWrite(nextPayload);
+      if (this.#nextRythmPayload) {
+        const nextPayload = this.#nextRythmPayload;
+        this.#nextRythmPayload = null;
+        this.#_executeRythmWrite(nextPayload);
       }
     }
   }
 
   /**
-   * Immediately stops the display of rhythm-related music animations
+   * Immediately stops the display of rythm-related music animations
    * @returns {Promise<void>}
    */
-  async stopMusicRhythm() {
+  async stopMusicRythm() {
     return this.sendImageRythm(0, 0);
   }
 
@@ -987,6 +987,8 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async freezeScreen() {
+    console.warn("[Matrix] Command 'freezeScreen' is experimental.\nIdk what is it...");
+    
     const payload = new Uint8Array([
       0x04, 0x00, 0x03, 0x00,
     ]);
@@ -1123,6 +1125,16 @@ export class iDotMatrix {
 
     return await this.send(payload);
   }
+
+  /**
+   * Convertit l'index de configuration de l'UI en secondes réelles
+   * @param {number} timeSign - L'index de durée (1 à 4)
+   * @returns {number} Durée en secondes (par défaut 5)
+   */
+  getMaterialDuration(timeSign) { // See more info in RESEARCH.md
+    const durations = { 1: 10, 2: 30, 3: 60, 4: 300 };
+    return durations[timeSign] || 5;
+  };
 
   /**
    * Converts a string into a continuous array of binary font bitmaps using HTML5 Canvas rendering
@@ -1280,8 +1292,10 @@ export class iDotMatrix {
       ]);
     });
 
-    for (const [index, chunk] of chunks.entries()) {
-      console.log(`[Matrix] Sending PNG chunk ${index + 1}/${chunks.length}`);
+    for (const index in chunks) {
+      const chunk = chunks[index];
+      
+      console.log(`[Matrix] Sending PNG chunk ${Number(index)}/${chunks.length}`);
       await this.sendAsync(chunk, 35);
     }
   }
@@ -1305,7 +1319,7 @@ export class iDotMatrix {
       
       const byteLen = this.#short2byte(length);
       
-      const timeValue = mode === 12 ? 0 : 5; // See more info in RESEARCH.md
+      const timeValue = mode === 12 ? 0 : this.getMaterialDuration(mode) ; // See more info in RESEARCH.md
       const byteTime = this.#short2byte(timeValue);
 
       return new Uint8Array([
@@ -1320,8 +1334,10 @@ export class iDotMatrix {
       ]);
     });
 
-    for (let [index, chunk] in chunks.entries()) {
-      console.log(`[Matrix] Sending PNG chunk ${index + 1}/${chunks.length}`);
+    for (const index in chunks) {
+      const chunk = chunks[index];
+      
+      console.log(`[Matrix] Sending PNG chunk ${Number(index) + 1}/${chunks.length}`);
       await this.sendAsync(chunk, 35);
     }
   }
@@ -1350,8 +1366,10 @@ export class iDotMatrix {
       ]);
     });
 
-    for (const [index, chunk] of chunks.entries()) {
-      console.log(`[Matrix] Sending GIF chunk ${index + 1}/${chunks.length}`);
+    for (const index in chunks) {
+      const chunk = chunks[index];
+      
+      console.log(`[Matrix] Sending GIF chunk ${Number(index) + 1}/${chunks.length}`);
       await this.sendAsync(chunk, 10);
       await this.Wait(150);
     }
