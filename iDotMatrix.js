@@ -83,7 +83,7 @@ export class iDotMatrix {
     
     for (const size of MTU_TESTS) {
       try {
-        const testBuffer = new Uint8Array(size);
+        const testBuffer = new Uint8Array(Array(size).fill(255));
         await this.writeChar.writeValueWithoutResponse(testBuffer);
 
         console.log(`MTU successfully validated at: ${size} bytes!`);
@@ -304,16 +304,19 @@ export class iDotMatrix {
       const descView = await descriptor.readValue();
       const modelString = new TextDecoder('utf-8').decode(descView).replace(/\0/g, '').trim();
 
-      if (modelString.includes("TR2306") || modelString.includes("TR3232")) {
+      if (['TR2306', 'TR3232'].some(m => modelString.includes(m))) {
         this.width = 32;
         this.height = 32;
-      } else if (modelString.includes("TR1616")) {
+      } else
+      if (modelString.includes("TR1616")) {
         this.width = 16;
         this.height = 16;
-      } else if (modelString.includes("TR6464")) {
+      } else
+      if (['TR2403', 'TR6464'].some(m => modelString.includes(m))) {
         this.width = 64;
         this.height = 64;
-      } else if (modelString.includes("TR1632")) {
+      } else
+      if (modelString.includes("TR1632")) {
         this.width = 16;
         this.height = 32;
       }
