@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "webbluetooth": "^3.7.0"
+  },
+  "type": "module"
+}

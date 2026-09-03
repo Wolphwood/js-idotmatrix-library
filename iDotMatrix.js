@@ -1,3 +1,5 @@
+import { WebBluetoothAdapter } from "./bluetooth/WebBluetoothAdapter.js";
+
 export class iDotMatrix {
   #SERVICE_UUID = 0x00fa;
   #WRITE_CHAR_UUID = 0xfa02;
@@ -7,19 +9,19 @@ export class iDotMatrix {
   #CHUNK_SIZE = 20;
 
   #canvas; #ctx;
+  #boundNotificationHandler = null;
 
   constructor(options = {}) {
-
-    this.device = null;
-    this.server = null;
-    this.service = null;
-    this.writeChar = null;
-    this.notifyChar = null;
+    this.ble = options.bluetoothadapter ?? new WebBluetoothAdapter();
+    this.ble.service_uuid = this.#SERVICE_UUID;
+    this.ble.write_uuid   = this.#WRITE_CHAR_UUID;
+    this.ble.notify_uuid  = this.#NOTIFY_CHAR_UUID;
 
     this.throwErrors = options.throwErrors ?? true;
 
-    this.#canvas = document.createElement('canvas');
-    this.#ctx = this.#canvas.getContext('2d', { willReadFrequently: true });
+    // temp disabled
+    // this.#canvas = document.createElement('canvas');
+    // this.#ctx = this.#canvas.getContext('2d', { willReadFrequently: true });
   }
 
   /**
@@ -55,10 +57,10 @@ export class iDotMatrix {
   }
   
   /**
-   * Method tu clamp a value
-   * @param {Uint8Array} value
-   * @param {Uint8Array} data
-   * @param {Uint8Array} data
+   * Method to clamp a value
+   * @param {number} value
+   * @param {number} min
+   * @param {number} max
    * @returns {number}
    */
   clamp(value, min, max) {
@@ -67,10 +69,10 @@ export class iDotMatrix {
 
   /**
    * Method to Wait N millisecond(s)
-   * @param {Uint8Array} ms - time to wait
+   * @param {number} ms - time to wait
    * @returns {Promise<void>}
    */
-  Wait(ms = 0) {
+  #delay(ms = 0) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
@@ -84,7 +86,7 @@ export class iDotMatrix {
     for (const size of MTU_TESTS) {
       try {
         const testBuffer = new Uint8Array(Array(size).fill(255));
-        await this.writeChar.writeValueWithoutResponse(testBuffer);
+        await this.ble.writeWithoutResponse(testBuffer);
 
         console.log(`MTU successfully validated at: ${size} bytes!`);
         return size;
@@ -97,149 +99,54 @@ export class iDotMatrix {
   }
 
   /**
-   * Internal connection logic once a device is selected
-   * @private
-   * @param {BluetoothDevice} device 
-   * @returns {Promise<void>}
-   */
-  async #establishConnection(device) {
-    this.device = device;
-    console.info(`Connecting to ${this.device.name || 'Device'}...`);
-    
-    let tries = 5;
-    let connected = false;
-
-    do {
-      tries--;
-      
-      try {
-        this.server = await this.device.gatt.connect();
-        this.service = await this.server.getPrimaryService(this.#SERVICE_UUID);
-        this.writeChar = await this.service.getCharacteristic(this.#WRITE_CHAR_UUID);
-        this.notifyChar = await this.service.getCharacteristic(this.#NOTIFY_CHAR_UUID);
-
-        this.#CHUNK_SIZE = await this.detectMaxMtu();
-
-        connected = true;
-      } catch (err) {
-        console.error("Error during connection :", err);
-
-        try {
-          await this.device.gatt.disconnect();
-        } catch (e) {}
-
-        if (tries > 0) {
-          console.info("Retrying in one second...");
-          await this.Wait(1000);
-        }
-      }
-    } while (tries > 0 && !connected);
-
-    if (connected) {
-      this._boundIconValuechanged = this.#event_characteristicvaluechanged.bind(this);  
-      await this.notifyChar.startNotifications();
-      this.notifyChar.addEventListener('characteristicvaluechanged', this._boundIconValuechanged);
-      
-      await this.getDeviceInfo();
-      this.clearInternalCanvas();
-    } else {
-      console.warn(`Failed to connect after 5 attempts.`);
-      throw new Error("Failed to connect after 5 attempts");
-    }
-  }
-
-  /**
    * Handle Errors
    */
-  #error(error) {
+  #error(error, details) {
+    const errMessage = details ? `${error} ${details}` : error;
     if (this.throwErrors) {
       if (error instanceof Error) throw error;
-      else throw new Error(error);
+      else throw new Error(errMessage);
     } else {
-      console.error(error);
+      console.error(errMessage);
     }
   }
 
   /**
-   * Search for nearby iDotMatrix devices and trigger the browser prompt.
-   * Use this for the FIRST connection.
-   * @returns {Promise<void>}
-   */
-  async searchAndConnect() {
-    try {
-      console.info("Searching iDotMatrix devices via browser prompt...");
-      const selectedDevice = await navigator.bluetooth.requestDevice({
-        filters: [{ namePrefix: 'IDM-' }],
-        optionalServices: [this.#SERVICE_UUID]
-      });
-
-      await this.#establishConnection(selectedDevice);
-      
-      return selectedDevice; 
-    } catch (err) {
-      this.#error("Unable to search or connect :", err);
-      return null;
-    }
-  }
-
-  /**
-   * Connect to a previously paired device automatically.
-   * Uses memory cache or device ID if supported by the browser.
-   * @param {string} [deviceId] - The unique device.id saved from a previous connection
+   * Connect to a device directly by MAC address or ID via NodeWebBluetoothAdapter
+   * @param {string} deviceId - MAC address or ID of the BLE device
    * @returns {Promise<void>}
    */
   async connect(deviceId) {
-    if (this.device) {
-      console.info(`[Matrix] Reconnecting automatically to cached device: ${this.device.name}...`);
-      await this.#establishConnection(this.device);
+    if (this.ble.device && this.ble.connected) {
+      console.info(`[Matrix] Reconnecting automatically to cached device...`);
+      await this.ble.connect(this.ble.device);
+      await this.ble.startNotifications(this.#event_characteristicvaluechanged);
       return;
     }
-
-    if (!deviceId) {
-      this.#error("[Matrix] Cannot automate connection: deviceId or cached device is missing.");
-      return;
+    
+    try {
+      console.info(`[Matrix] Connecting to device: ${deviceId?.id || deviceId?.name || deviceId || 'Unknown'}`);
+      await this.ble.connect(deviceId);
+      await this.ble.startNotifications(this.#event_characteristicvaluechanged);
+    } catch (err) {
+      this.#error("[Matrix] Connection failed:", err);
     }
-
-    if (typeof navigator.bluetooth.getDevices === 'function') {
-      try {
-        console.info(`[Matrix] Searching allowed devices for ID: ${deviceId}...`);
-        const savedDevice = await navigator.bluetooth.getDevices().then(devices => 
-          devices.find(d => d.id === deviceId)
-        );
-
-        if (savedDevice) {
-          await this.#establishConnection(savedDevice);
-          return;
-        }
-      } catch (err) {
-        this.#error("[Matrix] Failed to fetch device from browser storage:", err);
-      }
-    }
-
-    console.warn("[Matrix] Automated cold-start connection not supported here. Call searchAndConnect() instead.");
   }
 
   /**
    * Disconnects from the iDotMatrix device and cleans up properties
    */
   async disconnect() {
-    if (this.device && this.device.gatt.connected) {
-      console.info(`Disconnecting from ${this.device.name}...`);
+    if (this.ble.device && this.ble.connected) {
+      console.info(`Disconnecting from ${this.ble.device.name}...`);
       
-      if (this.notifyChar && this._boundIconValuechanged) {
-        this.notifyChar.removeEventListener("characteristicvaluechanged", this.#event_characteristicvaluechanged);
-      }
+      await this.ble.stopNotifications();
       
-      await this.device.gatt.disconnect();
+      await this.ble.disconnect();
       console.info("Disconnected successfully.");
     } else {
       console.warn("No active device connection found to disconnect.");
     }
-
-    this.server = null;
-    this.service = null;
-    this.writeChar = null;
-    this.notifyChar = null;
   }
 
   /**
@@ -248,11 +155,11 @@ export class iDotMatrix {
    * @returns {Promise<boolean>} True if connected/reconnected, false otherwise
    */
   async #ensureConnection() {
-    if (this.device && this.device.gatt.connected) {
+    if (this.ble.device && this.ble.connected) {
       return true;
     }
     
-    if (!this.device) {
+    if (!this.ble.device) {
       this.#error("[Matrix] Cannot auto-reconnect: No device has been paired yet.");
       return false;
     }
@@ -260,31 +167,11 @@ export class iDotMatrix {
     console.warn("[Matrix] Connection lost or not established. Attempting automatic reconnection...");
 
     try {
-      this.server = await this.device.gatt.connect();
-      
-      this.service = await this.server.getPrimaryService(this.#SERVICE_UUID);
-      this.writeChar = await this.service.getCharacteristic(this.#WRITE_CHAR_UUID);
-      this.notifyChar = await this.service.getCharacteristic(this.#NOTIFY_CHAR_UUID);
-
-      this._boundIconValuechanged = this.#event_characteristicvaluechanged.bind(this);  
-      await this.notifyChar.startNotifications();
-      this.notifyChar.addEventListener('characteristicvaluechanged', this._boundIconValuechanged);
-
+      await this.connect(this.ble.device);
       console.info("[Matrix] Automatic reconnection successful!");
       return true;
     } catch (error) {
       this.#error("[Matrix] Automatic reconnection failed:", error);
-      
-      try {
-        await this.device.gatt.disconnect();
-      } catch (e) {}
-      
-      this.server = null;
-      this.service = null;
-      this.writeChar = null;
-      this.notifyChar = null;
-      this._boundIconValuechanged = null;
-
       return false;
     }
   }
@@ -294,14 +181,13 @@ export class iDotMatrix {
    * @returns {Promise<{ id: string, name: string, model: string, width: number, height: number, mtu: number }|null>}
    */
   async getDeviceInfo() {
-    if (!this.writeChar) {
+    if (!this.ble.device || !this.ble.connected) {
       this.#error("No device connected.");
       return null;
     }
 
     try {
-      const descriptor = await this.writeChar.getDescriptor(0x2901);
-      const descView = await descriptor.readValue();
+      const descView = await this.ble.readDescriptor(0x2901);
       const modelString = new TextDecoder('utf-8').decode(descView).replace(/\0/g, '').trim();
 
       if (['TR2306', 'TR3232'].some(m => modelString.includes(m))) {
@@ -322,8 +208,8 @@ export class iDotMatrix {
       }
 
       const deviceInfo = {
-        id: this.device ? this.device.id : null,
-        name: this.device ? this.device.name : 'Unknown Device',
+        id: this.ble.device ? this.ble.device.id : null,
+        name: this.ble.device ? this.ble.device.name : 'Unknown Device',
         model: modelString,
         width: this.width,
         height: this.height,
@@ -341,14 +227,21 @@ export class iDotMatrix {
    * Handles incoming notification buffers from the matrix
    * @param {Event} event - The characteristic value changed event
    */
-  async #event_characteristicvaluechanged(event) {
-    const buffer = new Uint8Array(event.target.value.buffer);
-    
+  async #event_characteristicvaluechanged(buffer) {
     // Image/Animation upload notification handler (sendImageData & sendDIYImageData)
     if (buffer.length >= 5) {
+      const isColorAck = buffer[1] === 0 && buffer[2] === 2 && buffer[3] === 2;
       const isOfficialAck = buffer[1] === 0 && buffer[2] === 2 && buffer[3] === 0;
       const isDiyAck = buffer[1] === 0 && buffer[2] === 0 && buffer[3] === 0;
 
+      if (isColorAck) {
+        if (buffer[4] === 1) {
+          console.info("[Matrix] Color changed.");
+        } else
+        console.info(`[Matrix] color ack unknown value '${buffer[4]}'`);
+
+        return;
+      } else
       if (isOfficialAck || isDiyAck) {
         if (buffer[4] === 3 || (isDiyAck && buffer[4] === 1) || (isDiyAck && buffer[4] === 0)) {
           console.info("[Matrix] Image transfer completed successfully");
@@ -541,14 +434,15 @@ export class iDotMatrix {
     const packets = this._splitIntoChunks(payload, this.#CHUNK_SIZE);
 
     for (const packet of packets) {
-      await this.writeChar.writeValueWithoutResponse(packet);
-      await this.Wait(delayMs);
+      await this.ble.writeWithoutResponse(packet);
+      await this.#delay(delayMs);
     }
   }
 
   /**
    * Sends a payload sequentially using async/await promises
    * @param {Uint8Array} payload - Complete command payload
+   * @param {number} [msDelay=8] - Throttle delay between packet transmissions
    * @returns {Promise<void>}
    */
   async sendAsync(payload, msDelay = 8) {
@@ -557,8 +451,8 @@ export class iDotMatrix {
     const packets = this._splitIntoChunks(payload, this.#CHUNK_SIZE);
 
     for (const packet of packets) {
-      await this.writeChar.writeValueWithoutResponse(packet);
-      await this.Wait(msDelay);
+      await this.ble.writeWithoutResponse(packet);
+      await this.#delay(msDelay);
     }
   }
 
@@ -655,6 +549,7 @@ export class iDotMatrix {
   /**
    * Activates a predefined procedural animation effect with a custom color palette
    * @param {number} style - Effect index (0 to 6)
+   * @param {number} speed - Animation speed (1 to 100)
    * @param {Array<Array<number>>} rgbValues - List of [R, G, B] sub-arrays (between 2 and 7 colors max)
    * @returns {Promise<void>}
    */
@@ -674,8 +569,8 @@ export class iDotMatrix {
 
   /**
    * Update Scoreboard widget
-   * @param {number} count1 - Score Player/Team #1 (0-999)
-   * @param {number} count2 - Score Player/Team #2 (0-999)
+   * @param {number} score1 - Score Player/Team #1 (0-999)
+   * @param {number} score2 - Score Player/Team #2 (0-999)
    * @returns {Promise<void>}
    */
   async setScoreboard(score1 = 0, score2 = 0) {
@@ -704,12 +599,12 @@ export class iDotMatrix {
   }
   get chronograph() {
     return {
-      set:    () => this.setChronograph(0), // 0 → Reset
-      reset:  () => this.setChronograph(0), // 0 → Reset
-      stop:   () => this.setChronograph(0), // 0 → Reset
-      start:  () => this.setChronograph(1), // 1 → Start
-      pause:  () => this.setChronograph(2), // 2 → Pause
-      resume: () => this.setChronograph(3), // 3 → Resume
+      set:    () => this.setChronograph(0),
+      reset:  () => this.setChronograph(0),
+      stop:   () => this.setChronograph(0),
+      start:  () => this.setChronograph(1),
+      pause:  () => this.setChronograph(2),
+      resume: () => this.setChronograph(3),
     }
   }
 
@@ -738,29 +633,28 @@ export class iDotMatrix {
       this.#_internal_countdown_timeout = null;
     };
     const sT = (s = 0) => {
-      // Correction : implementation of an absolute timestamp in seconds using Date.now()
       this.#_internal_countdown_end_at = Math.floor(Date.now() / 1000) + s;
       this.#_internal_countdown_timeout = setTimeout(this.#_internal_countdown_callback ?? (() => console.info(`[Matrix] Countdown ended.`)), s * 1000);
     };
 
     return {
-      disable: () => { // 0 → Disable
+      disable: () => {
         rT();
         this.setCountdown(0);
       },
-      stop: () => { // 1 → Start (but used to reset at 00:00)
+      stop: () => {
         rT();
         this.setCountdown(1);
       },
-      reset: () => { // 1 → Start (but used to reset at 00:00)
+      reset: () => {
         rT();
         this.setCountdown(1);
       },
-      start: (minutes = 0, seconds = 0) => { // 1 → Start
+      start: (minutes = 0, seconds = 0) => {
         rT(); sT((minutes * 60) + seconds);
         this.setCountdown(1, minutes, seconds);
       },
-      pause: () => { // 2 → Pause
+      pause: () => {
         const currentTimestamp = Math.floor(Date.now() / 1000);
         if (this.#_internal_countdown_end_at > currentTimestamp) {
           rT();
@@ -768,7 +662,7 @@ export class iDotMatrix {
           this.setCountdown(2);
         }
       },
-      resume: () => { // 3 → Resume
+      resume: () => {
         rT(); sT(this.#_internal_countdown_end_at);
         this.setCountdown(3);
       },
@@ -780,7 +674,6 @@ export class iDotMatrix {
    * @param {number} type - 0 = Internal Matrix Mic, 1 = App/PC Remote Mode
    * @returns {Promise<void>}
    */
-  // [TODO | DEBUG] : Idk, it's not working ?
   async setMicType(type) {
     const payload = new Uint8Array([
       0x06, 0x00, 0x0B, this.#MIN_VALUE,
@@ -792,7 +685,6 @@ export class iDotMatrix {
   #isWritingRythm = false;
   #nextRythmPayload = null;
 
-  // [TODO | DEBUG] Still have : Uncaught (in promise) NetworkError: GATT operation already in progress.
   /**
    * Unified routing method for rythm simulation (Modeled after the APK)
    * @param {number} globalMode - Mode from 0 to 9 (0-4: Software, 5-9: Hardware)
@@ -883,7 +775,7 @@ export class iDotMatrix {
       await this.sendAsync(payload);
     } catch (err) {
       console.warn("[GATT Bypass] Audio frame dropped to prevent lagging");
-      console.error(err)
+      console.error(err);
     } finally {
       this.#isWritingRythm = false;
 
@@ -904,7 +796,7 @@ export class iDotMatrix {
   }
 
   /**
-   * Global synchronization of the date and calendar (Based on your legacy class)
+   * Global synchronization of the date and calendar
    * Sends the complete date (Year, Month, Day, Day of the week, Hour, Minute, Second)
    * @param {Date} [date=new Date()] - Host Date object
    * @returns {Promise<void>}
@@ -960,11 +852,10 @@ export class iDotMatrix {
    * @param {boolean} enabled - True to blink, False for a solid display
    * @returns {Promise<void>}
    */
-  // [ TODO | DEBUG ] nothing change ?
   async setTimeIndicator(enabled = true) {
     const payload = new Uint8Array([
       0x05, 0x00, 0x07,
-      0x80, // this.#MIN_VALUE,
+      0x80,
       enabled ? 0x01 : 0x00
     ]);
     return await this.send(payload);
@@ -996,7 +887,6 @@ export class iDotMatrix {
   }
 
   /**
-   * AFTER INVESTIGATION : PASSWORD IS USELESS IF DON'T USE IDM APP.
    * Sets or modifies a hardware lock password on the device
    * @param {string} pincode - 6-digit PIN code
    * @returns {Promise<void>}
@@ -1010,7 +900,7 @@ export class iDotMatrix {
     
     const payload = new Uint8Array([
       0x08, 0x00, 0x04, 0x02,
-      0x01, // → Mode : Enable / Modify
+      0x01,
       p1, p2, p3
     ]);
     
@@ -1018,7 +908,6 @@ export class iDotMatrix {
   }
 
   /**
-   * AFTER INVESTIGATION : PASSWORD IS USELESS IF DON'T USE IDM APP.
    * Removes the hardware lock password (Disables security)
    * @param {string} pincode - The current PIN code required to validate removal
    * @returns {Promise<void>}
@@ -1034,7 +923,7 @@ export class iDotMatrix {
 
     const payload = new Uint8Array([
       0x08, 0x00, 0x04, 0x02,
-      0x00, // → Mode : Delete / Disable
+      0x00,
       p1, p2, p3
     ]);
     
@@ -1042,7 +931,6 @@ export class iDotMatrix {
   }
 
   /**
-   * AFTER INVESTIGATION : PASSWORD IS USELESS IF DON'T USE IDM APP.
    * Authenticates with the matrix using the current PIN code
    * To be sent right after connecting if a password is active.
    * @param {string} pincode - 6-digit PIN code
@@ -1065,7 +953,6 @@ export class iDotMatrix {
 
   /**
    * Requests reading the screen sleep timeout (Pure read command)
-   * Never knew if this actually worked...
    * @returns {Promise<void>}
    */
   async readScreenLight() {
@@ -1080,7 +967,7 @@ export class iDotMatrix {
   }
 
   /**
-   * Seems to notify with {5, 0, 3, 0, [0,1,3]} ?
+   * Requests current display status
    * @returns {Promise<void>}
    */
   async askStatus() {
@@ -1090,7 +977,6 @@ export class iDotMatrix {
 
   /**
    * Performs a full Factory Reset of the matrix (Data wipe + Restart)
-   * Based on the proven reverse-engineering sequence.
    * @returns {Promise<void>}
    */
   async deleteDeviceData() {
@@ -1131,10 +1017,10 @@ export class iDotMatrix {
    * @param {number} timeSign - L'index de durée (1 à 4)
    * @returns {number} Durée en secondes (par défaut 5)
    */
-  getMaterialDuration(timeSign) { // See more info in RESEARCH.md
+  getMaterialDuration(timeSign) {
     const durations = { 1: 10, 2: 30, 3: 60, 4: 300 };
     return durations[timeSign] || 5;
-  };
+  }
 
   /**
    * Converts a string into a continuous array of binary font bitmaps using HTML5 Canvas rendering
@@ -1241,7 +1127,6 @@ export class iDotMatrix {
       textBgColor[0], textBgColor[1], textBgColor[2]
     ]);
 
-    // Construct the inner payload dynamically
     const innerPayload = new Uint8Array([
       ...header,
       ...textBitmaps
@@ -1251,7 +1136,6 @@ export class iDotMatrix {
     const innerPayloadLenBytes = this.#int2byte(innerPayload.length);
     const totalLenBytes = this.#short2byte(16 + innerPayload.length);
 
-    // Final full payload structure
     const fullPayload = new Uint8Array([
       ...totalLenBytes,
       0x03, 0x00, 0x00,
@@ -1266,7 +1150,6 @@ export class iDotMatrix {
 
   /**
    * Processes, chunks, and uploads a raw PNG byte buffer to the matrix hardware memory
-   * Based on official sendDIYImageData protocol.
    * @param {ArrayBuffer|Uint8Array} buffer - Raw binary data of the PNG file
    * @returns {Promise<void>}
    */
@@ -1278,12 +1161,12 @@ export class iDotMatrix {
       const clen = chunk.length + 9;
 
       return new Uint8Array([
-        (clen >>> 8) & 0xFF, // Chunk len in 2 bytes Big-Endian
+        (clen >>> 8) & 0xFF,
         clen & 0xFF,
         0x00, 0x00,
-        index > 0 ? 0x02 : 0x00, // 0 = 1st, 2 = rest of packets
+        index > 0 ? 0x02 : 0x00,
         
-        (len >>> 24) & 0xFF, // PNG len in 4 bytes Big-Endian
+        (len >>> 24) & 0xFF,
         (len >>> 16) & 0xFF,
         (len >>> 8) & 0xFF,
         len & 0xFF,
@@ -1301,13 +1184,11 @@ export class iDotMatrix {
   }
 
   /**
- * Processes, chunks, and uploads a raw PNG byte buffer using the official protocol
- * Features 16-byte Little-Endian header encryption with CRC32 and mode handling.
- * based on sendImageData()
- * @param {ArrayBuffer|Uint8Array} buffer - Raw binary data of the PNG file
- * @param {number} [mode=12] - Render mode or component ID (default: 12) (don't really know what is it)
- * @returns {Promise<void>}
- */
+   * Processes, chunks, and uploads a raw PNG byte buffer using the official protocol
+   * @param {ArrayBuffer|Uint8Array} buffer - Raw binary data of the PNG file
+   * @param {number} [mode=12] - Render mode or component ID (default: 12)
+   * @returns {Promise<void>}
+   */
   async sendImage(buffer, mode = 12) {
     const imageData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 
@@ -1319,7 +1200,7 @@ export class iDotMatrix {
       
       const byteLen = this.#short2byte(length);
       
-      const timeValue = mode === 12 ? 0 : this.getMaterialDuration(mode) ; // See more info in RESEARCH.md
+      const timeValue = mode === 12 ? 0 : this.getMaterialDuration(mode);
       const byteTime = this.#short2byte(timeValue);
 
       return new Uint8Array([
@@ -1345,6 +1226,7 @@ export class iDotMatrix {
   /**
    * Transmits a raw, compressed GIF image file to the matrix
    * @param {ArrayBuffer|Uint8Array} buffer - Raw binary contents of the .gif file
+   * @returns {Promise<void>}
    */
   async sendGif(buffer) {
     const gifData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -1358,7 +1240,7 @@ export class iDotMatrix {
       return new Uint8Array([
         ...clenBytes,
         0x01, 0x00,
-        index > 0 ? 0x02 : 0x00, // 0 = 1st, 2 = rest of packets
+        index > 0 ? 0x02 : 0x00,
         ...lenBytes,
         ...crcBytes,
         0x05, 0x00, 0x0d,
@@ -1371,14 +1253,12 @@ export class iDotMatrix {
       
       console.log(`[Matrix] Sending GIF chunk ${Number(index) + 1}/${chunks.length}`);
       await this.sendAsync(chunk, 10);
-      await this.Wait(150);
+      await this.#delay(150);
     }
   }
 
   /**
    * [EXPERIMENTAL] Configures the joint display positioning or screen transition effects.
-   * @note This feature is currently experimental. Its exact hardware behavior and 
-   * side-effects are not completely verified.
    * @param {number} mode - The hardware joint mode index or position configuration
    * @returns {Promise<void>}
    */
