@@ -9,7 +9,6 @@ export class iDotMatrix {
   #CHUNK_SIZE = 20;
 
   #canvas; #ctx;
-  #boundNotificationHandler = null;
 
   constructor(options = {}) {
     this.ble = options.bluetoothadapter ?? new WebBluetoothAdapter();
