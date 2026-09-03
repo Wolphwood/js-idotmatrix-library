@@ -25,8 +25,13 @@ Please choose your preferred language to access the full class API documentation
 
 ```javascript
 import { iDotMatrix } from './iDotMatrix.js';
+import { NodeWebBluetoothAdapter } from "./bluetooth/NodeWebBluetoothAdapter.js"
+import { WebBluetoothAdapter } from "./bluetooth/WebBluetoothAdapter.js"
 
-const matrix = new iDotMatrix();
+const matrix = new iDotMatrix({
+  throwErrors: true, // set to false to not throw errors.
+  bluetoothadapter: new NodeWebBluetoothAdapter() // Replace with WebBluetoothAdapter or simply ignore this to use the web interface. 
+});
 
 // Connect to the LED Matrix on user interaction
 document.getElementById('connectBtn').addEventListener('click', async () => {
