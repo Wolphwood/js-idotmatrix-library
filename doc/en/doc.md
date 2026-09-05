@@ -10,21 +10,13 @@ The `iDotMatrix` class controls iDotMatrix LED panels over Bluetooth Low Energy.
 
 ## Table of contents
 
-- [Connection](#connection)
-  - [`constructor()`](#constructoroptions-)
-  - [Browser](#browser)
-  - [Node.js](#nodejs)
-  - [`connect()`](#connectdeviceid)
-  - [`disconnect()`](#disconnect)
-  - [`detectMaxMtu()`](#detectmaxmtu)
-  - [`getDeviceInfo()`](#getdeviceinfo)
+- [Adapter documentation](#adapter-documentation)
 - [Utilities and properties](#utilities-and-properties)
-  - [`ctx`, `clearInternalCanvas()`, `internalCanvasToBuffer()`](#ctx-clearinternalcanvas-internalcanvastobuffer)
   - [`clamp()`](#clampvalue-min-max)
   - [`_splitIntoChunks()`](#_splitintochunksarray-chunksize)
-  - [`send()` / `sendAsync()`](#sendpayload-delayms-8-sendasyncpayload-msdelay-8)
+  - [`send()` / `sendAsync()`](#sendpayload-delayms-8-/-sendasyncpayload-msdelay-8)
 - [Screen and drawing](#screen-and-drawing)
-  - [`screenOn()` / `screenOff()`](#screenon-screenoff)
+  - [`screenOn()` / `screenOff()`](#screenon-/-screenoff)
   - [`setBrightness()`](#setbrightnesslevel)
   - [`setFullscreenColor()`](#setfullscreencolorr-g-b)
   - [`setImageMode()`](#setimagemodemode-1)
@@ -34,9 +26,9 @@ The `iDotMatrix` class controls iDotMatrix LED panels over Bluetooth Low Energy.
   - [`freezeScreen()` ⚠️ Experimental](#freezescreen-experimental)
 - [Widgets](#widgets)
   - [`setScoreboard()`](#setscoreboardscore1-0-score2-0)
-  - [`setChronograph()` / `chronograph`](#setchronographmode-0-chronograph)
-  - [`setCountdown()` / `countdown`](#setcountdownmode-0-minutes-0-seconds-0-countdown)
-- [Rhythm / audio](#rhythm-audio)
+  - [`setChronograph()` / `chronograph`](#setchronographmode-0-/-chronograph)
+  - [`setCountdown()` / `countdown`](#setcountdownmode-0-minutes-0-seconds-0-/-countdown)
+- [Rhythm / audio](#rhythm-/-audio)
   - [`setMicType()`](#setmictypetype)
   - [`sendRythmSimulation()`](#sendrythmsimulationglobalmode-currentvolumeintensity-0)
   - [`sendCustomRythm()`](#sendcustomrythmstyle-rawheights)
@@ -65,66 +57,14 @@ The `iDotMatrix` class controls iDotMatrix LED panels over Bluetooth Low Energy.
 
 ---
 
-## Connection
+## Adapter documentation
 
-### `constructor(options = {})`
+Canvas and Bluetooth layers now have dedicated documentation so this reference can stay focused on the `iDotMatrix` API.
 
-```js
-const matrix = new iDotMatrix({ throwErrors: true, bluetoothadapter: adapter });
-```
-
-- `throwErrors` (`boolean`, default `true`): throws errors when enabled, otherwise logs them.
-- `bluetoothadapter`: BLE adapter. A `WebBluetoothAdapter` is created by default.
-
-The class configures service `0x00FA`, write characteristic `0xFA02`, and notification characteristic `0xFA03` on the adapter.
-
-### Browser
-
-```js
-import { iDotMatrix } from './iDotMatrix.js';
-const matrix = new iDotMatrix();
-await matrix.connect(); // opens Web Bluetooth device picker when needed
-const info = await matrix.getDeviceInfo();
-```
-
-`WebBluetoothAdapter.connect()` automatically calls `scan()` when no device has been selected yet.
-
-### Node.js
-
-```js
-import { iDotMatrix } from './iDotMatrix.js';
-import { NodeWebBluetoothAdapter } from './bluetooth/NodeWebBluetoothAdapter.js';
-
-const ble = new NodeWebBluetoothAdapter();
-const matrix = new iDotMatrix({ bluetoothadapter: ble });
-const devices = await ble.scan({ duration: 4000, prefix: 'IDM-' });
-await matrix.connect(devices[0].id);
-```
-
-`NodeWebBluetoothAdapter.scan()` accepts `duration`, `prefix`, `suffix`, and `firstOnly`.
-
-### `connect(deviceId)`
-Connects through the active adapter and starts BLE notifications. In Node.js, `deviceId` can be an ID or name discovered by the adapter. In a browser the argument may be omitted.
-
-### `disconnect()`
-Stops notifications and cleanly closes the BLE connection.
-
-### `detectMaxMtu()`
-Tries writes of `512`, `244`, `128`, `64`, and `20` bytes and returns the largest accepted size.
-
-> It currently **does not change** the fragmentation size used by `send()` / `sendAsync()`, which remains 20 bytes.
-
-### `getDeviceInfo()`
-Reads descriptor `0x2901`, detects the model, and updates `width` / `height`.
-
-Returns `{ id, name, model, width, height, mtu: 20 }`.
-
-Recognized models: `TR1616` (16×16), `TR1632` (16×32), `TR2306` / `TR3232` (32×32), `TR2403` / `TR6464` (64×64).
+- [CanvasAdapter](./canvas.md) — Web/Node.js rendering, 2D context, resizing, and encoding.
+- [BluetoothAdapter](./ble.md) — BLE transport, Web Bluetooth, Node.js, scanning, connection, and notifications.
 
 ## Utilities and properties
-
-### `ctx`, `clearInternalCanvas()`, `internalCanvasToBuffer()`
-These expose the internal HTML canvas rendering path. **Internal canvas initialization is currently disabled in the constructor**, so these APIs require that path to be re-enabled/initialized before use.
 
 ### `clamp(value, min, max)`
 Clamps a number between `min` and `max`.

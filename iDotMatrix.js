@@ -1,6 +1,5 @@
 import { WebBluetoothAdapter } from "./bluetooth/WebBluetoothAdapter.js";
-
-
+import { WebCanvasAdapter } from "./canvas/WebCanvasAdapter.js";
 
 export class iDotMatrix {
   #SERVICE_UUID = 0x00fa;
@@ -10,21 +9,17 @@ export class iDotMatrix {
   #MIN_VALUE = -128;
   #CHUNK_SIZE = 20;
 
-  #canvas; #ctx;
-
   #crcTable;
 
   constructor(options = {}) {
-    this.ble = options.bluetoothadapter ?? new WebBluetoothAdapter();
+    this.ble = options.bluetoothadapter ?? options.bluetooth ?? new WebBluetoothAdapter();
     this.ble.service_uuid = this.#SERVICE_UUID;
     this.ble.write_uuid   = this.#WRITE_CHAR_UUID;
     this.ble.notify_uuid  = this.#NOTIFY_CHAR_UUID;
+    
+    this.canvas = options.canvasadapter ?? options.canvas ?? new WebCanvasAdapter();
 
     this.throwErrors = options.throwErrors ?? true;
-
-    // temp disabled
-    // this.#canvas = document.createElement('canvas');
-    // this.#ctx = this.#canvas.getContext('2d', { willReadFrequently: true });
   }
 
   /**
@@ -32,7 +27,7 @@ export class iDotMatrix {
    * @type {CanvasRenderingContext2D}
    */
   get ctx() {
-    return this.#ctx;
+    return this.canvas.ctx;
   }
 
   /**
@@ -40,8 +35,8 @@ export class iDotMatrix {
    * @returns {void}
    */
   clearInternalCanvas() {
-    this.#canvas.width = this.width;
-    this.#canvas.height = this.height;
+    if (!this.canvas) return;
+    this.canvas.clear();
   }
 
   /**
@@ -49,8 +44,10 @@ export class iDotMatrix {
    * @returns {Promise<Uint8Array>} A promise that resolves with the raw PNG binary data
    */
   internalCanvasToBuffer() {
+    if (!this.canvas) return;
+    
     return new Promise(resolve => {
-      this.#canvas.toBlob(async (blob) => {
+      this.canvas.canvas.toBlob(async (blob) => {
         const arrayBuffer = await blob.arrayBuffer();
         const pngBytes = new Uint8Array(arrayBuffer);
         

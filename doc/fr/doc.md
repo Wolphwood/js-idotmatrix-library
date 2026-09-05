@@ -10,21 +10,13 @@ La classe `iDotMatrix` pilote les matrices LED iDotMatrix en Bluetooth Low Energ
 
 ## Sommaire
 
-- [Connexion](#connexion)
-  - [`constructor()`](#constructoroptions-)
-  - [Navigateur](#navigateur)
-  - [Node.js](#nodejs)
-  - [`connect()`](#connectdeviceid)
-  - [`disconnect()`](#disconnect)
-  - [`detectMaxMtu()`](#detectmaxmtu)
-  - [`getDeviceInfo()`](#getdeviceinfo)
+- [Documentation des adapters](#documentation-des-adapters)
 - [Utilitaires et propriétés](#utilitaires-et-propriétés)
-  - [`ctx`](#ctx)
   - [`clamp()`](#clampvalue-min-max)
   - [`_splitIntoChunks()`](#_splitintochunksarray-chunksize)
-  - [`send()` / `sendAsync()`](#sendpayload-delayms-8-sendasyncpayload-msdelay-8)
+  - [`send()` / `sendAsync()`](#sendpayload-delayms-8-/-sendasyncpayload-msdelay-8)
 - [Écran et dessin](#écran-et-dessin)
-  - [`screenOn()` / `screenOff()`](#screenon-screenoff)
+  - [`screenOn()` / `screenOff()`](#screenon-/-screenoff)
   - [`setBrightness()`](#setbrightnesslevel)
   - [`setFullscreenColor()`](#setfullscreencolorr-g-b)
   - [`setImageMode()`](#setimagemodemode-1)
@@ -36,7 +28,7 @@ La classe `iDotMatrix` pilote les matrices LED iDotMatrix en Bluetooth Low Energ
   - [`setScoreboard()`](#setscoreboardscore1-0-score2-0)
   - [`setChronograph()`](#setchronographmode-0)
   - [`setCountdown()`](#setcountdownmode-0-minutes-0-seconds-0)
-- [Rythme / audio](#rythme-audio)
+- [Rythme / audio](#rythme-/-audio)
   - [`setMicType()`](#setmictypetype)
   - [`sendRythmSimulation()`](#sendrythmsimulationglobalmode-currentvolumeintensity-0)
   - [`sendCustomRythm()`](#sendcustomrythmstyle-rawheights)
@@ -68,82 +60,14 @@ La classe `iDotMatrix` pilote les matrices LED iDotMatrix en Bluetooth Low Energ
 
 ---
 
-## Connexion
+## Documentation des adapters
 
-### `constructor(options = {})`
+Les couches Canvas et Bluetooth disposent désormais de leur propre documentation afin de garder cette référence centrée sur l'API `iDotMatrix`.
 
-```js
-const matrix = new iDotMatrix({
-  throwErrors: true,
-  bluetoothadapter: adapter
-});
-```
-
-- `throwErrors` (`boolean`, défaut `true`) : lève les erreurs si `true`, sinon les journalise.
-- `bluetoothadapter` : adaptateur BLE. Par défaut, `WebBluetoothAdapter` est créé automatiquement.
-
-La classe configure l'adaptateur avec le service `0x00FA`, la caractéristique d'écriture `0xFA02` et la caractéristique de notification `0xFA03`.
-
-### Navigateur
-
-```js
-import { iDotMatrix } from './iDotMatrix.js';
-
-const matrix = new iDotMatrix();
-await matrix.connect(); // ouvre le sélecteur Web Bluetooth si nécessaire
-const info = await matrix.getDeviceInfo();
-```
-
-`WebBluetoothAdapter.connect()` déclenche automatiquement `scan()` lorsqu'aucun appareil n'a encore été sélectionné.
-
-### Node.js
-
-```js
-import { iDotMatrix } from './iDotMatrix.js';
-import { NodeWebBluetoothAdapter } from './bluetooth/NodeWebBluetoothAdapter.js';
-
-const ble = new NodeWebBluetoothAdapter();
-const matrix = new iDotMatrix({ bluetoothadapter: ble });
-
-const devices = await ble.scan({ duration: 4000, prefix: 'IDM-' });
-await matrix.connect(devices[0].id);
-```
-
-`NodeWebBluetoothAdapter.scan()` accepte `duration`, `prefix`, `suffix` et `firstOnly`.
-
-### `connect(deviceId)`
-Connecte la matrice via l'adaptateur actif et démarre les notifications BLE. Sous Node.js, `deviceId` peut être l'ID ou le nom d'un appareil découvert par l'adaptateur. Sous navigateur, l'argument peut être omis.
-
-### `disconnect()`
-Arrête les notifications puis ferme proprement la connexion BLE.
-
-### `detectMaxMtu()`
-Teste successivement des écritures de `512`, `244`, `128`, `64` et `20` octets et retourne la plus grande taille acceptée.
-
-> Cette méthode **ne modifie pas** actuellement la taille de fragmentation utilisée par `send()` / `sendAsync()`, qui reste fixée à 20 octets.
-
-### `getDeviceInfo()`
-Lit le descripteur `0x2901`, détecte le modèle et renseigne `width` / `height`.
-
-Retour :
-
-```js
-{
-  id,
-  name,
-  model,
-  width,
-  height,
-  mtu: 20
-}
-```
-
-Modèles actuellement reconnus : `TR1616` (16×16), `TR1632` (16×32), `TR2306` / `TR3232` (32×32), `TR2403` / `TR6464` (64×64).
+- [CanvasAdapter](./canvas.md) — rendu Web/Node.js, contexte 2D, redimensionnement et encodage.
+- [BluetoothAdapter](./ble.md) — transport BLE, Web Bluetooth, Node.js, scan, connexion et notifications.
 
 ## Utilitaires et propriétés
-
-### `ctx`
-Retourne le contexte 2D du canvas interne. **Le canvas interne est actuellement désactivé dans le constructeur** ; `ctx`, `clearInternalCanvas()` et `internalCanvasToBuffer()` ne sont donc utilisables que si cette partie est réactivée/initialisée.
 
 ### `clamp(value, min, max)`
 Contraint une valeur entre `min` et `max`.
