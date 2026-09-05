@@ -1,5 +1,7 @@
 import { WebBluetoothAdapter } from "./bluetooth/WebBluetoothAdapter.js";
 
+
+
 export class iDotMatrix {
   #SERVICE_UUID = 0x00fa;
   #WRITE_CHAR_UUID = 0xfa02;
@@ -9,6 +11,8 @@ export class iDotMatrix {
   #CHUNK_SIZE = 20;
 
   #canvas; #ctx;
+
+  #crcTable;
 
   constructor(options = {}) {
     this.ble = options.bluetoothadapter ?? new WebBluetoothAdapter();
@@ -119,14 +123,14 @@ export class iDotMatrix {
     if (this.ble.device && this.ble.connected) {
       console.info(`[Matrix] Reconnecting automatically to cached device...`);
       await this.ble.connect(this.ble.device);
-      await this.ble.startNotifications(this.#event_characteristicvaluechanged);
+      await this.ble.startNotifications(this.#event_characteristicvaluechanged.bind(this));
       return;
     }
     
     try {
       console.info(`[Matrix] Connecting to device: ${deviceId?.id || deviceId?.name || deviceId || 'Unknown'}`);
       await this.ble.connect(deviceId);
-      await this.ble.startNotifications(this.#event_characteristicvaluechanged);
+      await this.ble.startNotifications(this.#event_characteristicvaluechanged.bind(this));
     } catch (err) {
       this.#error("[Matrix] Connection failed:", err);
     }
@@ -368,30 +372,36 @@ export class iDotMatrix {
    * @returns {number} 32-bit unsigned integer representing the CRC32
    */
   #calculateCRC32(data) {
-    const makeTable = () => {
-      let c;
-      const table = [];
-      for (let n = 0; n < 256; n++) {
-        c = n;
-        for (let k = 0; k < 8; k++) {
-          c = ((c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1));
-        }
-        table[n] = c;
-      }
-      return table;
-    };
-
-    const crcTable = window.crcTable || (window.crcTable = makeTable());
-    let crc = 0 ^ (-1);
+    const crcTable = this.#getCRC32Table();
+    let crc = -1;
 
     for (let i = 0; i < data.length; i++) {
       crc = (crc >>> 8) ^ crcTable[(crc ^ data[i]) & 0xFF];
     }
 
-    return (crc ^ (-1)) >>> 0;
+    return (crc ^ -1) >>> 0;
+  }
+  
+  #getCRC32Table() {
+    if (this.#crcTable) return this.#crcTable;
+
+    const table = [];
+
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+
+      for (let k = 0; k < 8; k++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+
+      table[n] = c;
+    }
+
+    this.#crcTable = table;
+    return this.#crcTable;
   }
 
-  #int2byte(i) {
+  #uint32ToBytesLE(i) {
     return new Uint8Array([
       i & 0xFF,
       (i >>> 8) & 0xFF,
@@ -400,7 +410,7 @@ export class iDotMatrix {
     ]);
   }
 
-  #short2byte(s) {
+  #uint16ToBytesLE(s) {
     return new Uint8Array([
       s & 0xFF,
       (s >>> 8) & 0xFF
@@ -1112,7 +1122,7 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async sendText(textBitmaps, numChars, textMode = 1, speed = 95, textColorMode = 1, textColor = [255, 0, 0], textBgMode = 0, textBgColor = [0, 0, 0], slotIndex = 12) {
-    const numCharsBytes = this.#short2byte(numChars);
+    const numCharsBytes = this.#uint16ToBytesLE(numChars);
     
     const header = new Uint8Array([
       ...numCharsBytes,
@@ -1131,9 +1141,9 @@ export class iDotMatrix {
       ...textBitmaps
     ]);
 
-    const crcBytes = this.#int2byte(this.#calculateCRC32(innerPayload));
-    const innerPayloadLenBytes = this.#int2byte(innerPayload.length);
-    const totalLenBytes = this.#short2byte(16 + innerPayload.length);
+    const crcBytes = this.#uint32ToBytesLE(this.#calculateCRC32(innerPayload));
+    const innerPayloadLenBytes = this.#uint32ToBytesLE(innerPayload.length);
+    const totalLenBytes = this.#uint16ToBytesLE(16 + innerPayload.length);
 
     const fullPayload = new Uint8Array([
       ...totalLenBytes,
@@ -1191,16 +1201,16 @@ export class iDotMatrix {
   async sendImage(buffer, mode = 12) {
     const imageData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
 
-    const crc = this.#int2byte(this.#calculateCRC32(imageData));
-    const len = this.#int2byte(imageData.length);
+    const crc = this.#uint32ToBytesLE(this.#calculateCRC32(imageData));
+    const len = this.#uint32ToBytesLE(imageData.length);
 
     const chunks = this._splitIntoChunks(imageData, 4096).map((chunk, index) => {
       const length = chunk.length + 16;
       
-      const byteLen = this.#short2byte(length);
+      const byteLen = this.#uint16ToBytesLE(length);
       
       const timeValue = mode === 12 ? 0 : this.getMaterialDuration(mode);
-      const byteTime = this.#short2byte(timeValue);
+      const byteTime = this.#uint16ToBytesLE(timeValue);
 
       return new Uint8Array([
         ...byteLen,
@@ -1230,11 +1240,11 @@ export class iDotMatrix {
   async sendGif(buffer) {
     const gifData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
     
-    const crcBytes = this.#int2byte(this.#calculateCRC32(gifData));
-    const lenBytes = this.#int2byte(gifData.length);
+    const crcBytes = this.#uint32ToBytesLE(this.#calculateCRC32(gifData));
+    const lenBytes = this.#uint32ToBytesLE(gifData.length);
 
     const chunks = this._splitIntoChunks(gifData, 4096).map((chunk, index) => {
-      const clenBytes = this.#short2byte(chunk.length + 16);
+      const clenBytes = this.#uint16ToBytesLE(chunk.length + 16);
 
       return new Uint8Array([
         ...clenBytes,
