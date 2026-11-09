@@ -14,13 +14,13 @@ La classe `iDotMatrix` pilote les matrices LED iDotMatrix en Bluetooth Low Energ
 - [Utilitaires et propriétés](#utilitaires-et-propriétés)
   - [`clamp()`](#clampvalue-min-max)
   - [`_splitIntoChunks()`](#_splitintochunksarray-chunksize)
-  - [`send()` / `sendAsync()`](#sendpayload-delayms-8-/-sendasyncpayload-msdelay-8)
+  - [`send()`](#sendpayload-delayms-8)
 - [Écran et dessin](#écran-et-dessin)
   - [`screenOn()` / `screenOff()`](#screenon-/-screenoff)
   - [`setBrightness()`](#setbrightnesslevel)
   - [`setFullscreenColor()`](#setfullscreencolorr-g-b)
   - [`setImageMode()`](#setimagemodemode-1)
-  - [`setPixel()`](#setpixelx-y-r-g-b-asyncmode-false)
+  - [`setPixel()`](#setpixelx-y-r-g-b)
   - [`clearPixel()`](#clearpixelx-y)
   - [`setEffect()`](#seteffectstyle-speed-rgbvalues)
   - [`freezeScreen()` ⚠️ Expérimental](#freezescreen-expérimental)
@@ -51,9 +51,8 @@ La classe `iDotMatrix` pilote les matrices LED iDotMatrix en Bluetooth Low Energ
   - [`textToBitmaps()`](#texttobitmapstext-targetheight-32-fontconfig-bold-22px-sans-serif)
   - [`sendText()`](#sendtexttextbitmaps-numchars-textmode-1-speed-95-textcolormode-1-textcolor-25500-textbgmode-0-textbgcolor-000-slotindex-12)
 - [Images et GIF](#images-et-gif)
-  - [`getMaterialDuration()`](#getmaterialdurationtimesign)
   - [`sendDIYImage()`](#senddiyimagebuffer)
-  - [`sendImage()`](#sendimagebuffer-mode-12)
+  - [`sendImage()`](#sendimagebuffer-options-)
   - [`sendGif()`](#sendgifbuffer)
 - [Multi-écran](#multi-écran)
   - [`sendJoint()` ⚠️ Expérimental](#sendjointmode-expérimental)
@@ -64,8 +63,8 @@ La classe `iDotMatrix` pilote les matrices LED iDotMatrix en Bluetooth Low Energ
 
 Les couches Canvas et Bluetooth disposent désormais de leur propre documentation afin de garder cette référence centrée sur l'API `iDotMatrix`.
 
-- [CanvasAdapter](./canvas.md) — rendu Web/Node.js, contexte 2D, redimensionnement et encodage.
-- [BluetoothAdapter](./ble.md) — transport BLE, Web Bluetooth, Node.js, scan, connexion et notifications.
+- [CanvasAdapter](./canvas.md) - rendu Web/Node.js, contexte 2D, redimensionnement et encodage.
+- [BluetoothAdapter](./ble.md) - transport BLE, Web Bluetooth, Node.js, scan, connexion et notifications.
 
 ## Utilitaires et propriétés
 
@@ -75,8 +74,8 @@ Contraint une valeur entre `min` et `max`.
 ### `_splitIntoChunks(array, chunkSize)`
 Découpe un `Uint8Array` en blocs. Cette méthode est exposée par la classe mais sert principalement en interne.
 
-### `send(payload, delayMs = 8)` / `sendAsync(payload, msDelay = 8)`
-Assurent la connexion, découpent le payload en fragments BLE de 20 octets, les écrivent séquentiellement avec `writeValueWithoutResponse()` et appliquent un délai entre chaque fragment. Dans la version actuelle, les deux méthodes ont le même comportement général.
+### `send(payload, delayMs = 8)`
+Les opérations sont sérialisées. Les fragments font au maximum `fragmentSize` octets (20 par défaut). Ces méthodes se terminent après les écritures locales, sans attendre de confirmation de rendu.
 
 ## Écran et dessin
 
@@ -92,8 +91,8 @@ Remplit l'écran d'une couleur RGB. Chaque composante est limitée à `0..255`.
 ### `setImageMode(mode = 1)`
 Configure le mode DIY/dessin. Le SDK accepte `0..255`; `0` désactive et `1` active le mode standard, les autres valeurs étant dépendantes du firmware.
 
-### `setPixel(x, y, r, g, b, asyncMode = false)`
-Modifie un pixel. Les coordonnées sont limitées aux dimensions détectées (16×16 par défaut si elles sont inconnues). `asyncMode=true` utilise `sendAsync()`.
+### `setPixel(x, y, r, g, b)`
+Modifie un pixel. Les coordonnées sont limitées aux dimensions détectées (16×16 par défaut si elles sont inconnues).
 
 ### `clearPixel(x, y)`
 Équivalent à `setPixel(x, y, 0, 0, 0)`.
@@ -137,7 +136,7 @@ Le getter `countdown` fournit `disable()`, `stop()`, `reset()`, `start(minutes, 
 
 ## Rythme / audio
 
-> Le nom `Rythm` est conservé dans l'API actuelle pour compatibilité.
+> Les méthodes audio utilisent le nom `Rythm`.
 
 ### `setMicType(type)`
 `0` = microphone interne, `1` = source distante/application.
@@ -177,10 +176,10 @@ Active/désactive le retournement de l'affichage.
 Configure une plage horaire d'économie d'énergie. Heures `0..23`, minutes `0..59`, luminosité `5..100`.
 
 ### `readScreenLight()` ⚠️ Expérimental
-Demande la valeur du délai de veille. La réponse est reçue via notification BLE et actuellement journalisée dans la console.
+Demande la valeur du délai de veille. La réponse est reçue via notification BLE et exposée par l’événement `response`.
 
 ### `askStatus()`
-Demande le mode d'affichage actif. La réponse est reçue via notification BLE et actuellement journalisée.
+Demande le mode d'affichage actif. La réponse est reçue via notification BLE et exposée par `displayStatus` hors transfert texte.
 
 ### `deleteDeviceData()`
 Envoie la commande de réinitialisation/suppression des données de l'appareil. À utiliser avec prudence.
@@ -199,9 +198,9 @@ Authentifie la session avec un PIN de 6 chiffres.
 ## Texte
 
 ### `textToBitmaps(text, targetHeight = 32, fontConfig = "bold 22px sans-serif")`
-Convertit chaque caractère en bitmap monochrome à l'aide d'un canvas HTML. `targetHeight` est prévu pour `16`, `32` ou `64` et ne peut pas dépasser `matrix.height`.
+Convertit chaque caractère en bitmap monochrome à l'aide d'un Canvas adapter. `targetHeight` est prévu pour `16`, `32` ou `64` et ne peut pas dépasser `matrix.height`.
 
-> Cette méthode dépend de `document.createElement("canvas")` et est donc **nativement destinée au navigateur**. Un environnement Node.js doit fournir une implémentation DOM/canvas compatible ou générer les bitmaps autrement.
+> Compatible navigateur et Node.js avec un adapter fournissant `createScratchCanvas()`, notamment `NodeCanvasAdapter`.
 
 ### `sendText(textBitmaps, numChars, textMode = 1, speed = 95, textColorMode = 1, textColor = [255,0,0], textBgMode = 0, textBgColor = [0,0,0], slotIndex = 12)`
 Construit le payload texte, calcule son CRC32, puis l'envoie dans le slot mémoire demandé.
@@ -222,16 +221,14 @@ await matrix.sendText(bitmaps, text.length);
 
 ## Images et GIF
 
-### `getMaterialDuration(timeSign)`
-Convertit un index en durée : `1 → 10 s`, `2 → 30 s`, `3 → 60 s`, `4 → 300 s`; toute autre valeur retourne `5 s`.
 
 ### `sendDIYImage(buffer)`
 Envoie un PNG via le protocole DIY. Le fichier est découpé en blocs logiques de 4096 octets puis chaque bloc est fragmenté pour le BLE.
 
-### `sendImage(buffer, mode = 12)`
-Envoie un PNG avec le protocole officiel, longueur totale et CRC32. `mode=12` correspond au mode d'affichage direct utilisé par défaut ; les modes `1..4` utilisent les durées de `getMaterialDuration()`.
+### `sendImage(buffer, options = {})`
+Envoie un PNG avec longueur totale et CRC32. `options` est un objet contenant uniquement `slotIndex` (défaut 12) et `durationValue` (défaut 0). Un argument numérique est rejeté.
 
-### `sendGif(buffer)`
+### `sendGif(buffer, options = {})`
 Envoie un GIF compressé avec longueur totale et CRC32, par blocs logiques de 4096 octets.
 
 Les trois méthodes acceptent `ArrayBuffer` ou `Uint8Array`.
@@ -240,3 +237,20 @@ Les trois méthodes acceptent `ArrayBuffer` ou `Uint8Array`.
 
 ### `sendJoint(mode)` ⚠️ Expérimental
 Envoie le mode de jointure/transition multi-écran. La signification exacte des valeurs dépend encore du firmware.
+
+## Configuration, connexion et événements
+
+`new iDotMatrix(options)` accepte `bluetoothadapter`, `canvasadapter`, `width`, `height`, `throwErrors` (défaut `true`), `fragmentSize` (entier positif, défaut 20), `ackTimeoutMs` (positif, défaut 5000 ms). Sans DOM, le Canvas doit être injecté pour le rendu. `throwErrors=false` ne supprime pas les rejets des connexions et transferts.
+
+### `connect(deviceId)` / `disconnect()`
+Connexion par ID, nom ou objet natif ; sans cible, le navigateur ouvre son sélecteur. `connect()` active les notifications et retourne l’appareil. `disconnect()` interrompt les transferts et désactive la reconnexion automatique jusqu’au prochain `connect()`.
+
+### `getDeviceInfo()` / `requestDeviceInfo({ timeoutMs } = {})`
+`getDeviceInfo()` lit le descripteur optionnel `0x2901`. Le résultat expose `id`, `name`, `model`, `width`, `height`, `screenType`, `mcuVersion`, `descriptorAvailable`, `descriptorDimensions`, `firmwareDimensions`, `dimensionConflict`, `mtu`, `fragmentSize`. Le descripteur reconnu est prioritaire lors de cet appel ; un désaccord émet `deviceProfileConflict`. `mtu` vaut `null` avec les adapters fournis. `requestDeviceInfo()` demande et attend la réponse firmware typée ; le délai par défaut est `ackTimeoutMs`.
+
+### `on(name, callback)` / `off(name, callback)` / `emit(name, detail)`
+`on()` retourne une fonction de désabonnement ; `off()` retire le callback. Événements : `connected`, `disconnected`, `notification`, `response`, `deviceInfo`, `deviceProfileConflict`, `passwordRequired`, `displayStatus`, `timeAck`, `passwordOrDrawingResponse`.
+
+
+### Options des transferts
+`sendImage(data, {slotIndex: 12, durationValue: 0})` sépare index et durée. `sendGif(data, {slotIndex: 12, durationValue: 0})` conserve ces valeurs par défaut. Le slot 12 force la durée à zéro. Texte, image, GIF et DIY attendent un ACK terminal et retournent `{family, status, raw, sentBlocks, totalBlocks}` ; ils rejettent en cas de statut inconnu/erreur, déconnexion ou timeout. Voir [transferts et migration](sdk-transfers.md).

@@ -29,7 +29,7 @@
 - [CRC32](#crc32)
 - [`sendText()`](#sendtext)
 - [`sendDIYImage()`](#senddiyimagebuffer)
-- [`sendImage()`](#sendimagebuffer-mode-12)
+- [`sendImage()`](#sendimagebuffer-options-)
 - [`sendGif()`](#sendgifbuffer)
 
 ---
@@ -39,16 +39,16 @@
 Cette page décrit les octets réellement émis par la version actuelle de `iDotMatrix.js`. Les valeurs multi-octets indiquées `LE` sont little-endian.
 
 ## `screenOn()` / `screenOff()`
-`[0x05, 0x00, 0x07, 0x01, state]` — `state`: `1` ON, `0` OFF.
+`[0x05, 0x00, 0x07, 0x01, state]` - `state`: `1` ON, `0` OFF.
 
 ## `setBrightness(level)`
-`[0x05, 0x00, 0x04, 0x80, level]` — `level` limité à `5..100`.
+`[0x05, 0x00, 0x04, 0x80, level]` - `level` limité à `5..100`.
 
 ## `setFullscreenColor(r, g, b)`
-`[0x07, 0x00, 0x02, 0x02, r, g, b]` — RGB `0..255`.
+`[0x07, 0x00, 0x02, 0x02, r, g, b]` - RGB `0..255`.
 
 ## `setImageMode(mode)`
-`[0x05, 0x00, 0x04, 0x01, mode]` — `mode` `0..255`; `0` désactive, `1` active le mode DIY standard.
+`[0x05, 0x00, 0x04, 0x01, mode]` - `mode` `0..255`; `0` désactive, `1` active le mode DIY standard.
 
 ## `setPixel(x, y, r, g, b)`
 `[0x0A, 0x00, 0x05, 0x01, 0x00, r, g, b, x, y]`. `clearPixel()` envoie RGB = 0,0,0.
@@ -57,22 +57,22 @@ Cette page décrit les octets réellement émis par la version actuelle de `iDot
 `[(colors*3)+7, 0x00, 0x03, 0x02, style, speed, colors, ...RGB]`. Palette de 2 à 7 couleurs; style 0..6; vitesse 1..100.
 
 ## `setScoreboard(score1, score2)`
-`[0x08, 0x00, 0x0A, 0x80, score1_LE16, score2_LE16]` — scores `0..999`.
+`[0x08, 0x00, 0x0A, 0x80, score1_LE16, score2_LE16]` - scores `0..999`.
 
 ## `setChronograph(mode)`
-`[0x05, 0x00, 0x09, 0x80, mode]` — `0` reset, `1` start, `2` pause, `3` resume.
+`[0x05, 0x00, 0x09, 0x80, mode]` - `0` reset, `1` start, `2` pause, `3` resume.
 
 ## `setCountdown(mode, minutes, seconds)`
-`[0x07, 0x00, 0x08, 0x80, mode, minutes, seconds]` — mode `0..3`, minutes `0..255`, seconds `0..59`.
+`[0x07, 0x00, 0x08, 0x80, mode, minutes, seconds]` - mode `0..3`, minutes `0..255`, seconds `0..59`.
 
 ## `setMicType(type)`
-`[0x06, 0x00, 0x0B, 0x80, type]` — `0` micro interne, `1` source distante.
+`[0x05, 0x00, 0x0B, 0x80, type]` - `0` micro interne, `1` source distante.
 
 ## `sendCustomRythm(style, rawHeights)`
 `[0x21, 0x00, 0x01, 0x02, style, ...16 packed bytes]`. Les 32 hauteurs 0..15 sont compactées deux par octet (nibbles haut/bas).
 
 ## `sendImageRythm(animIndex, frame)`
-`[0x06, 0x00, 0x00, 0x02, frame, animIndex]` — frame `0..7`, animation `0..5`. `stopMusicRythm()` envoie `(0, 0)`.
+`[0x06, 0x00, 0x00, 0x02, frame, animIndex]` - frame `0..7`, animation `0..5`. `stopMusicRythm()` envoie `(0, 0)`.
 
 ## `setClockTime(date)`
 `[0x0B, 0x00, 0x01, 0x80, YY, MM, DD, weekday, hh, mm, ss]`. `weekday`: Monday=`1` ... Sunday=`7`.
@@ -125,35 +125,52 @@ Le payload interne commence par :
 
 Il est encapsulé par :
 
-`[totalLen_LE16, 0x03, 0x00, 0x00, innerLen_LE32, crc32_LE32, 0x00, 0x00, slotIndex, ...innerPayload]`
+`[blockLen_LE16, 0x03, 0x00, continuation, innerLen_LE32, crc32_LE32, 0x00, 0x00, slotIndex, ...innerPayload]`
 
 Le slot par défaut est 12. Le flux final est envoyé avec un délai de 25 ms entre fragments BLE.
 
 ## `sendDIYImage(buffer)`
 Le PNG est découpé en blocs de 4096 octets. Chaque bloc :
 
-`[chunkLenPlus9_BE16, 0x00, 0x00, continuation, totalLen_BE32, ...chunk]`
+`[chunkLenPlus9_LE16, 0x00, 0x00, continuation, totalLen_LE32, ...chunk]`
 
 `continuation = 0x00` pour le premier bloc, sinon `0x02`. Délai d'envoi : 35 ms entre fragments BLE.
 
-## `sendImage(buffer, mode = 12)`
+## `sendImage(buffer, options = {})`
 Le PNG est découpé en blocs de 4096 octets. Chaque bloc :
 
-`[chunkLenPlus16_LE16, 0x02, 0x00, continuation, totalLen_LE32, crc32_LE32, duration_LE16, mode, ...chunk]`
+`[chunkLenPlus16_LE16, 0x02, 0x00, continuation, totalLen_LE32, crc32_LE32, duration_LE16, slotIndex, ...chunk]`
 
-`continuation = 0x00` pour le premier bloc, sinon `0x02`. `mode=12` → duration `0`; modes `1..4` → `10`, `30`, `60`, `300` seconds.
+`continuation = 0x00` pour le premier bloc, sinon `0x02`. `slotIndex=12` → `durationValue=0`.
 
-## `sendGif(buffer)`
+## `sendGif(buffer, options = {})`
 Le GIF est découpé en blocs de 4096 octets. Chaque bloc :
 
-`[chunkLenPlus16_LE16, 0x01, 0x00, continuation, totalLen_LE32, crc32_LE32, 0x05, 0x00, 0x0D, ...chunk]`
+`[chunkLenPlus16_LE16, 0x01, 0x00, continuation, totalLen_LE32, crc32_LE32, duration_LE16, slotIndex, ...chunk]`
 
-Après chaque bloc logique, la classe attend en plus 150 ms.
+Délai entre fragments BLE : 10 ms. La continuation et la fin dépendent des ACK du firmware.
 
 # BLE
 
 - Service UUID: `0x00FA`
 - Write characteristic: `0xFA02`
 - Notification characteristic: `0xFA03`
-- `send()` / `sendAsync()` fragmentent actuellement les payloads en blocs de 20 octets.
-- `detectMaxMtu()` sonde 512/244/128/64/20 mais ne modifie pas cette valeur de 20 octets.
+- `send()` : `fragmentSize` (20 octets par défaut).
+
+## Blocs, réponses et spécifications
+
+Tous les médias, texte inclus, sont découpés en blocs de 4096 octets de contenu maximum. `continuation` vaut 0 au premier bloc puis 2. Le CRC et la longueur totale portent sur tout le contenu, pas un fragment. Le DIY ne contient aucun CRC. La durée et le slot du GIF sont configurables (0 et 12 par défaut) ; le slot 12 force toujours la durée à zéro.
+
+| Opcode bytes | Family | Continue | Terminal | Error |
+| --- | --- | --- | --- | --- |
+| `02 00` | image | 1 | 3 | 2 |
+| `01 00` | GIF | 1 | 3 | 0, 2 |
+| `03 00` | text | 1 | 3 | 2 |
+| `00 00` | DIY | 2 | 0, 1 | unknown |
+
+Les opcodes sont aux octets 2–3, le statut à l’octet 4. `03 00` hors transfert texte est aussi une réponse de statut d’affichage. `05 02` est ambigu entre vérification PIN et dessin.
+
+### `requestDeviceInfo()`
+`04 00 01 80` → `[length_LE16, 01, 80, major, minor, screenOn, screenType, passwordProtected]` (9 bytes). `screenType`: 1 = 16×16, 3 = 32×32, 4 = 64×64. `mcuVersion = [major, minor]`.
+
+Une réponse `01 80` de 5 à 8 octets est décodée comme `timeAck`, pas comme fiche firmware. Les types inconnus ne changent pas les dimensions. Les statuts sont expérimentaux et dépendants du firmware ; aucun identifiant de transaction universel ni garantie de persistance n’est établi. Voir [transferts](sdk-transfers.md) et [BLE](ble.md).

@@ -1,5 +1,6 @@
 import { WebBluetoothAdapter } from "./bluetooth/WebBluetoothAdapter.js";
 import { WebCanvasAdapter } from "./canvas/WebCanvasAdapter.js";
+import { encodeMediaBlocks, encodeDIYBlocks, decodeNotification } from "./protocol/frames.js";
 
 export class iDotMatrix {
   #SERVICE_UUID = 0x00fa;
@@ -8,54 +9,53 @@ export class iDotMatrix {
 
   #MIN_VALUE = -128;
   #CHUNK_SIZE = 20;
+  #ackTimeoutMs = 5000;
+  #operationTail = Promise.resolve();
+  #activeTransfer = null;
+  #listeners = new Map();
 
   #crcTable;
 
   constructor(options = {}) {
-    this.ble = options.bluetoothadapter ?? options.bluetooth ?? new WebBluetoothAdapter();
-    this.ble.service_uuid = this.#SERVICE_UUID;
-    this.ble.write_uuid   = this.#WRITE_CHAR_UUID;
-    this.ble.notify_uuid  = this.#NOTIFY_CHAR_UUID;
+    for (const key of ['bluetooth', 'canvas']) {
+      if (Object.hasOwn(options, key)) {
+        throw new TypeError(`Use ${key}adapter instead of ${key}`);
+      }
+    }
+    this.ble = options.bluetoothadapter ?? new WebBluetoothAdapter();
+    // Keep explicitly configured UUIDs (some hardware variants differ).
+    this.ble.service_uuid ??= this.#SERVICE_UUID;
+    this.ble.write_uuid   ??= this.#WRITE_CHAR_UUID;
+    this.ble.notify_uuid  ??= this.#NOTIFY_CHAR_UUID;
     
-    this.canvas = options.canvasadapter ?? options.canvas ?? new WebCanvasAdapter();
+    // Node.js has no DOM; users can inject NodeCanvasAdapter or use createNodeMatrix().
+    this.canvas = options.canvasadapter ??
+      ((typeof document !== 'undefined' || typeof OffscreenCanvas !== 'undefined')
+        ? new WebCanvasAdapter({ width: options.width ?? 16, height: options.height ?? 16 })
+        : null);
+    this.width = options.width ?? this.canvas?.width ?? 16;
+    this.height = options.height ?? this.canvas?.height ?? 16;
+    this._notificationHandler = buffer => this.#event_characteristicvaluechanged(buffer);
+    this._disconnectHandler = () => {
+      this.#rejectTransfer(new Error('[Matrix] BLE link lost during transfer'));
+      this.emit('disconnected');
+    };
+    this._offBLEDisconnect = typeof this.ble.onDisconnect === 'function'
+      ? this.ble.onDisconnect(this._disconnectHandler) : null;
+    this._allowReconnect = true;
 
     this.throwErrors = options.throwErrors ?? true;
+    // ATT payload capacity is not the negotiated MTU. Use an adapter-safe limit.
+    this.#CHUNK_SIZE = options.fragmentSize ?? 20;
+    if (!Number.isInteger(this.#CHUNK_SIZE) || this.#CHUNK_SIZE < 1) {
+      throw new RangeError('fragmentSize must be a positive integer');
+    }
+    this.#ackTimeoutMs = options.ackTimeoutMs ?? 5000;
+    if (!Number.isFinite(this.#ackTimeoutMs) || this.#ackTimeoutMs <= 0) {
+      throw new RangeError('ackTimeoutMs must be a positive number');
+    }
   }
 
-  /**
-   * Gets the 2D rendering context of the internal canvas
-   * @type {CanvasRenderingContext2D}
-   */
-  get ctx() {
-    return this.canvas.ctx;
-  }
-
-  /**
-   * Clears the internal canvas by resetting its dimensions
-   * @returns {void}
-   */
-  clearInternalCanvas() {
-    if (!this.canvas) return;
-    this.canvas.clear();
-  }
-
-  /**
-   * Converts the current internal canvas state into a compressed PNG byte buffer
-   * @returns {Promise<Uint8Array>} A promise that resolves with the raw PNG binary data
-   */
-  internalCanvasToBuffer() {
-    if (!this.canvas) return;
-    
-    return new Promise(resolve => {
-      this.canvas.canvas.toBlob(async (blob) => {
-        const arrayBuffer = await blob.arrayBuffer();
-        const pngBytes = new Uint8Array(arrayBuffer);
-        
-        resolve(pngBytes);
-      }, 'image/png');
-    });
-  }
-  
   /**
    * Method to clamp a value
    * @param {number} value
@@ -76,26 +76,104 @@ export class iDotMatrix {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  /**
-   * Probes and returns the maximum supported MTU payload size by sending trial packets.
-   * @returns {Promise<number>} Supported MTU size (e.g., 512, 244, 128, 64, or 20)
-   */
-  async detectMaxMtu() {
-    const MTU_TESTS = [512, 244, 128, 64, 20];
-    
-    for (const size of MTU_TESTS) {
-      try {
-        const testBuffer = new Uint8Array(Array(size).fill(255));
-        await this.ble.writeWithoutResponse(testBuffer);
+  /** Subscribe to typed SDK events. Returns an unsubscribe function. */
+  on(name, callback) {
+    if (typeof callback !== 'function') throw new TypeError('Event handler must be a function');
+    if (!this.#listeners.has(name)) this.#listeners.set(name, new Set());
+    this.#listeners.get(name).add(callback);
+    return () => this.off(name, callback);
+  }
 
-        console.log(`MTU successfully validated at: ${size} bytes!`);
-        return size;
-      } catch (error) {
-        console.warn(`Test failed at ${size} bytes, trying lower size...`);
-      }
+  off(name, callback) {
+    this.#listeners.get(name)?.delete(callback);
+  }
+
+  emit(name, detail) {
+    for (const handler of this.#listeners.get(name) ?? []) {
+      try { handler(detail); } catch (error) { console.error('[Matrix] Event listener failed:', error); }
     }
-    
-    return 20;
+  }
+
+  #enqueueOperation(action) {
+    const running = this.#operationTail.then(action);
+    this.#operationTail = running.catch(() => {});
+    return running;
+  }
+
+  #rejectTransfer(error) {
+    const state = this.#activeTransfer;
+    if (!state) return;
+    state.failure = error;
+    if (state.waiting) {
+      const { reject } = state.waiting;
+      state.waiting = null;
+      reject(error);
+    }
+  }
+
+  #receiveTransferAck(message) {
+    const state = this.#activeTransfer;
+    if (!state || message.family !== state.family) return false;
+    if (state.waiting) {
+      const { resolve } = state.waiting;
+      state.waiting = null;
+      resolve(message);
+    } else if (state.responses.length < 8) {
+      state.responses.push(message);
+    }
+    return true;
+  }
+
+  #nextTransferAck(state) {
+    if (state.failure) return Promise.reject(state.failure);
+    if (state.responses.length) return Promise.resolve(state.responses.shift());
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        state.waiting = null;
+        reject(new Error(`[Matrix] ${state.family} ACK timeout after ${this.#ackTimeoutMs} ms; device state is uncertain`));
+      }, this.#ackTimeoutMs);
+      state.waiting = {
+        resolve: result => { clearTimeout(timer); resolve(result); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      };
+    });
+  }
+
+  async #writeFragments(payload, delayMs) {
+    if (!(await this.#ensureConnection())) throw new Error('[Matrix] Device not connected');
+    for (const packet of this._splitIntoChunks(payload, this.#CHUNK_SIZE)) {
+      if (this.#activeTransfer?.failure) throw this.#activeTransfer.failure;
+      await this.ble.writeWithoutResponse(packet);
+      if (delayMs > 0) await this.#delay(delayMs);
+    }
+  }
+
+  /** Serialize a complete media upload, and await firmware continuation/terminal ACKs. */
+  #transferBlocks(blocks, family, delayMs) {
+    return this.#enqueueOperation(async () => {
+      const state = { family, responses: [], waiting: null, failure: null };
+      this.#activeTransfer = state; // Register before the first write (fast ACKs).
+      let sentBlocks = 0;
+      try {
+        for (const block of blocks) {
+          await this.#writeFragments(block, delayMs);
+          sentBlocks++;
+          // After the last 'continue', the device may send a separate terminal ACK.
+          while (true) {
+            const ack = await this.#nextTransferAck(state);
+            if (ack.outcome === 'terminal') return { family, status: ack.status, sentBlocks, totalBlocks: blocks.length, raw: ack.raw };
+            if (ack.outcome === 'error' || ack.outcome === 'unknown') {
+              throw new Error(`[Matrix] ${family} transfer rejected, status=${ack.status}`);
+            }
+            if (ack.outcome === 'continue' && sentBlocks < blocks.length) break;
+          }
+        }
+        throw new Error(`[Matrix] ${family} transfer ended without a terminal ACK`);
+      } finally {
+        if (state.waiting) state.waiting.reject(new Error('[Matrix] transfer ended'));
+        this.#activeTransfer = null;
+      }
+    });
   }
 
   /**
@@ -117,35 +195,26 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async connect(deviceId) {
-    if (this.ble.device && this.ble.connected) {
-      console.info(`[Matrix] Reconnecting automatically to cached device...`);
-      await this.ble.connect(this.ble.device);
-      await this.ble.startNotifications(this.#event_characteristicvaluechanged.bind(this));
-      return;
-    }
-    
+    this._allowReconnect = true;
     try {
-      console.info(`[Matrix] Connecting to device: ${deviceId?.id || deviceId?.name || deviceId || 'Unknown'}`);
-      await this.ble.connect(deviceId);
-      await this.ble.startNotifications(this.#event_characteristicvaluechanged.bind(this));
-    } catch (err) {
-      this.#error("[Matrix] Connection failed:", err);
+      if (!this.ble.connected) await this.ble.connect(deviceId ?? this.ble.device);
+      // Idempotent adapter notifications; no repeated anonymous handlers.
+      await this.ble.startNotifications(this._notificationHandler);
+      this.emit('connected', { device: this.ble.device });
+      return this.ble.device;
+    } catch (error) {
+      throw new Error(`[Matrix] Connection failed: ${error.message ?? error}`, { cause: error });
     }
   }
 
-  /**
-   * Disconnects from the iDotMatrix device and cleans up properties
-   */
+  /** Disconnect and prevent queued commands from silently reconnecting. */
   async disconnect() {
-    if (this.ble.device && this.ble.connected) {
-      console.info(`Disconnecting from ${this.ble.device.name}...`);
-      
-      await this.ble.stopNotifications();
-      
+    this._allowReconnect = false;
+    this.#rejectTransfer(new Error('[Matrix] Disconnected during transfer'));
+    try {
+      await this.ble.stopNotifications?.();
+    } finally {
       await this.ble.disconnect();
-      console.info("Disconnected successfully.");
-    } else {
-      console.warn("No active device connection found to disconnect.");
     }
   }
 
@@ -155,13 +224,10 @@ export class iDotMatrix {
    * @returns {Promise<boolean>} True if connected/reconnected, false otherwise
    */
   async #ensureConnection() {
-    if (this.ble.device && this.ble.connected) {
-      return true;
-    }
-    
+    if (this.ble.device && this.ble.connected) return true;
+    if (!this._allowReconnect) throw new Error('[Matrix] Explicitly disconnected; call connect() first');
     if (!this.ble.device) {
-      this.#error("[Matrix] Cannot auto-reconnect: No device has been paired yet.");
-      return false;
+      throw new Error('[Matrix] Cannot auto-reconnect: no device has been paired yet');
     }
 
     console.warn("[Matrix] Connection lost or not established. Attempting automatic reconnection...");
@@ -171,56 +237,78 @@ export class iDotMatrix {
       console.info("[Matrix] Automatic reconnection successful!");
       return true;
     } catch (error) {
-      this.#error("[Matrix] Automatic reconnection failed:", error);
-      return false;
+      throw new Error('[Matrix] Automatic reconnection failed', { cause: error });
     }
   }
 
   /**
    * Retrieves the connected device specifications and updates instance properties
-   * @returns {Promise<{ id: string, name: string, model: string, width: number, height: number, mtu: number }|null>}
+   * @returns {Promise<{ id: string, name: string, model: string, width: number, height: number, mtu: null, fragmentSize: number }|null>}
    */
   async getDeviceInfo() {
-    if (!this.ble.device || !this.ble.connected) {
-      this.#error("No device connected.");
-      return null;
-    }
-
+    if (!this.ble.device || !this.ble.connected) throw new Error('No device connected');
+    let model = null;
+    let descriptorError = null;
     try {
-      const descView = await this.ble.readDescriptor(0x2901);
-      const modelString = new TextDecoder('utf-8').decode(descView).replace(/\0/g, '').trim();
-
-      if (['TR2306', 'TR3232'].some(m => modelString.includes(m))) {
-        this.width = 32;
-        this.height = 32;
-      } else
-      if (modelString.includes("TR1616")) {
-        this.width = 16;
-        this.height = 16;
-      } else
-      if (['TR2403', 'TR6464'].some(m => modelString.includes(m))) {
-        this.width = 64;
-        this.height = 64;
-      } else
-      if (modelString.includes("TR1632")) {
-        this.width = 16;
-        this.height = 32;
-      }
-
-      const deviceInfo = {
-        id: this.ble.device ? this.ble.device.id : null,
-        name: this.ble.device ? this.ble.device.name : 'Unknown Device',
-        model: modelString,
-        width: this.width,
-        height: this.height,
-        mtu: this.#CHUNK_SIZE
-      };
-
-      return deviceInfo;
-    } catch (err) {
-      this.#error("Failed to retrieve device info :", err);
-      return null;
+      const bytes = await this.ble.readDescriptor(0x2901);
+      model = new TextDecoder('utf-8').decode(bytes).replace(/\0/g, '').trim();
+    } catch (error) {
+      // 0x2901 is optional in GATT; preserve firmware info if it was received.
+      descriptorError = error;
     }
+    let descriptorDimensions;
+    if (model?.includes('TR1616')) descriptorDimensions = [16,16];
+    else if (model?.includes('TR2306') || model?.includes('TR3232')) descriptorDimensions = [32,32];
+    else if (model?.includes('TR2403') || model?.includes('TR6464')) descriptorDimensions = [64,64];
+    else if (model?.includes('TR1632')) descriptorDimensions = [16,32];
+    const firmwareDimensions = ({ 1: [16,16], 3: [32,32], 4: [64,64] })[this.screenType];
+    const dimensionConflict = Boolean(descriptorDimensions && firmwareDimensions &&
+      descriptorDimensions.some((size, index) => size !== firmwareDimensions[index]));
+    if (dimensionConflict) this.emit('deviceProfileConflict', {
+      model, descriptorDimensions, screenType: this.screenType, firmwareDimensions,
+    });
+    const dimensions = descriptorDimensions ?? firmwareDimensions;
+    if (dimensions) this.#updateDimensions(...dimensions);
+    return {
+      id: this.ble.device.id ?? null,
+      name: this.ble.device.name ?? 'Unknown Device',
+      model, width: this.width, height: this.height,
+      screenType: this.screenType ?? null,
+      mcuVersion: this.mcuVersion ?? null,
+      descriptorAvailable: descriptorError === null,
+      descriptorDimensions: descriptorDimensions ?? null,
+      firmwareDimensions: firmwareDimensions ?? null,
+      dimensionConflict,
+      mtu: this.ble.attMtu ?? null,
+      fragmentSize: this.#CHUNK_SIZE,
+    };
+  }
+
+  #updateDimensions(width, height) {
+    this.width = width;
+    this.height = height;
+    if (this.canvas?.resize && (this.canvas.width !== width || this.canvas.height !== height)) {
+      this.canvas.resize(width, height);
+    }
+  }
+
+  /** Request firmware/device info from 04 00 01 80 and await its typed response. */
+  async requestDeviceInfo({ timeoutMs = this.#ackTimeoutMs } = {}) {
+    return this.#enqueueOperation(async () => {
+      let listener, timer;
+      const response = new Promise((resolve, reject) => {
+        listener = value => resolve(value);
+        this.on('deviceInfo', listener);
+        timer = setTimeout(() => reject(new Error('[Matrix] Device info response timed out')), timeoutMs);
+      });
+      try {
+        await this.#writeFragments(Uint8Array.from([4, 0, 1, 0x80]), 8);
+        return await response;
+      } finally {
+        clearTimeout(timer);
+        this.off('deviceInfo', listener);
+      }
+    });
   }
 
   /**
@@ -228,139 +316,29 @@ export class iDotMatrix {
    * @param {Event} event - The characteristic value changed event
    */
   async #event_characteristicvaluechanged(buffer) {
-    // Image/Animation upload notification handler (sendImageData & sendDIYImageData)
-    if (buffer.length >= 5) {
-      const isColorAck = buffer[1] === 0 && buffer[2] === 2 && buffer[3] === 2;
-      const isOfficialAck = buffer[1] === 0 && buffer[2] === 2 && buffer[3] === 0;
-      const isDiyAck = buffer[1] === 0 && buffer[2] === 0 && buffer[3] === 0;
-
-      if (isColorAck) {
-        if (buffer[4] === 1) {
-          console.info("[Matrix] Color changed.");
-        } else
-        console.info(`[Matrix] color ack unknown value '${buffer[4]}'`);
-
-        return;
-      } else
-      if (isOfficialAck || isDiyAck) {
-        if (buffer[4] === 3 || (isDiyAck && buffer[4] === 1) || (isDiyAck && buffer[4] === 0)) {
-          console.info("[Matrix] Image transfer completed successfully");
-        } else if (buffer[4] === 2) {
-          console.info("[Matrix] Target requested next 4K data block");
-        } else if (isOfficialAck && buffer[4] === 2) {
-          console.error("[Matrix] Hardware error: Memory out of space");
-        }
-        return;
-      }
-    }
-    
-    // Screen On/Off
-    if (buffer.length >= 5 && buffer[2] === 7 && buffer[3] === 1) {
-      const success = buffer[4] === 1;
-      console.info(`[Matrix] Screen change on/off success : ${success}`);
+    const message = decodeNotification(buffer);
+    this.emit('notification', message);
+    if (message.kind === 'deviceInfo') {
+      this.isPasswordProtected = message.passwordProtected;
+      this.screenType = message.screenType;
+      this.mcuVersion = message.mcuVersion;
+      const dimensions = ({ 1: [16,16], 3: [32,32], 4: [64,64] })[message.screenType];
+      if (dimensions) this.#updateDimensions(...dimensions);
+      this.emit('deviceInfo', message);
+      if (message.passwordProtected) this.emit('passwordRequired', message);
       return;
     }
-
-    // Screen Brightness
-    if (buffer.length >= 5 && buffer[2] === 4 && buffer[3] === this.#MIN_VALUE) {
-      const success = buffer[4] === 1;
-      if (success) console.info(`[Matrix] Screen brightness changed.`);
-      else console.info(`[Matrix] Something went wrong with brightness...`, buffer);
-      return;
+    if (message.kind === 'transferAck') {
+      if (this.#receiveTransferAck(message)) return;
+      // 03 00 may also be a response to askStatus, outside a text transfer.
+      if (message.family === 'text') this.emit('displayStatus', message);
     }
-
-    // Effect / Animation Response (0x03, 0x02)
-    if (buffer.length >= 5 && buffer[2] === 3 && buffer[3] === 2) {
-      if (buffer[4] === 1) {
-        console.info("[Matrix] MULTCPOK : Effect applied");
-      } else if (buffer[4] === 0) {
-        console.warn("[Matrix] ERROR : Effect Rejected");
-      }
-      return;
+    if (message.kind === 'timeAck') this.emit('timeAck', message);
+    if (message.kind === 'passwordVerificationOrDrawing') {
+      // Not always a PIN response: 32x32 firmware may use this key for drawing.
+      this.emit('passwordOrDrawingResponse', message);
     }
-
-    // Clock Style / Configuration Response (0x06, 0x01)
-    if (buffer.length >= 5 && buffer[2] === 6 && buffer[3] === 1) {
-      if (buffer[4] === 1) {
-        console.info("[Matrix] Clock Style applied successfully");
-      } else {
-        console.warn("[Matrix] Clock Style application failed or unknown:", buffer[4]);
-      }
-      return;
-    }
-
-    // Calendar / Time Synchronization Response (0x01, 128)
-    if (buffer.length >= 5 && buffer[2] === 1 && buffer[3] === 128) {
-      console.info("[Matrix] Calendar/Time synced and acknowledged by device");
-      return;
-    }
-
-    // Active Screen Display Status Response (0x03, 0x00) -> From askStatus()
-    if (buffer.length >= 5 && buffer[2] === 3 && buffer[3] === 0) {
-      const modes = { 0: "Clock/Widget Mode", 1: "Cloud/Internal Animation", 3: "DIY/Graffiti/Live Pixel Mode" };
-      const activeMode = modes[buffer[4]] || `Unknown Mode (${buffer[4]})`;
-      console.info(`[Matrix] Current active screen mode is: ${activeMode}`);
-      return;
-    }
-
-    // Power-Saving Eco Mode Configuration Response (0x02, 128) -> From setEcoMode()
-    if (buffer.length >= 5 && buffer[2] === 2 && buffer[3] === 128) {
-      if (buffer[4] === 1) console.info("[Matrix] Eco Mode schedule updated");
-      return;
-    }
-
-    // Device Lifecycle / Factory Reset Response (0x03, 128) -> From deleteDeviceData()
-    if (buffer.length >= 4 && buffer[2] === 3 && buffer[3] === 128) {
-      console.warn("[Matrix] FACTORY RESET ACKNOWLEDGED : Device is wiping data and rebooting...");
-      return;
-    }
-
-    // Security / Password Management Response (0x04, 0x02 or 0x05, 0x02) -> From Password system
-    if (buffer.length >= 5 && buffer[3] === 2) {
-      if (buffer[2] === 4) {
-        console.info(`[Matrix] Password Management applied. Action success state: ${buffer[4] === 1 ? "SUCCESS" : "FAILED"}`);
-        return;
-      }
-      if (buffer[2] === 5) {
-        if (buffer[4] === 1) {
-          console.info("[Matrix] Password Verification: AUTHENTICATED");
-        } else {
-          this.#error("[Matrix] Password Verification: INVALID PIN CODE");
-        }
-        return;
-      }
-    }
-
-    // Screen Sleep Timeout Read Response (0x0F, 128) -> From readScreenLight()
-    if (buffer.length >= 5 && buffer[2] === 15 && buffer[3] === 128) {
-      if (buffer[4] !== 255) {
-        console.info(`[Matrix] Screen sleep timeout buffer received: ${buffer[4]} minutes`);
-      } else {
-        console.warn("[Matrix] Device returned empty read placeholder (0xFF)");
-      }
-      return;
-    }
-
-    // Handshake / Specs Status Check
-    if (buffer.length >= 9 && buffer[2] === 0x01 && buffer[3] === 0x80) {
-      const mcuVersionMajor = buffer[4];
-      const mcuVersionMinor = buffer[5];
-      const isScreenOn = buffer[6] === 1;
-      const isPasswordProtected = buffer[8] === 1;
-      
-      console.log(`[Matrix] Firmware: ${mcuVersionMajor}.${mcuVersionMinor}`);
-      console.log(`[Matrix] Screen On: ${isScreenOn}`);
-      console.log(`[Matrix] Protected by password: ${isPasswordProtected}`);
-
-      this.isPasswordProtected = isPasswordProtected;
-      
-      if (isPasswordProtected) {
-        this.emit('passwordRequired');
-      }
-      return;
-    }
-
-    console.info("Received Buffer", buffer);
+    this.emit('response', message);
   }
 
   /**
@@ -435,31 +413,7 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async send(payload, delayMs = 8) {
-    if (!(await this.#ensureConnection())) return this.#error("[Matrix] Device not connected.");
-
-    const packets = this._splitIntoChunks(payload, this.#CHUNK_SIZE);
-
-    for (const packet of packets) {
-      await this.ble.writeWithoutResponse(packet);
-      await this.#delay(delayMs);
-    }
-  }
-
-  /**
-   * Sends a payload sequentially using async/await promises
-   * @param {Uint8Array} payload - Complete command payload
-   * @param {number} [msDelay=8] - Throttle delay between packet transmissions
-   * @returns {Promise<void>}
-   */
-  async sendAsync(payload, msDelay = 8) {
-    if (!(await this.#ensureConnection())) return this.#error("[Matrix] Device not connected.");
-
-    const packets = this._splitIntoChunks(payload, this.#CHUNK_SIZE);
-
-    for (const packet of packets) {
-      await this.ble.writeWithoutResponse(packet);
-      await this.#delay(msDelay);
-    }
+    return this.#enqueueOperation(() => this.#writeFragments(payload, delayMs));
   }
 
   /**
@@ -527,10 +481,9 @@ export class iDotMatrix {
    * @param {number} r - Red (0-255)
    * @param {number} g - Green (0-255)
    * @param {number} b - Blue (0-255)
-   * @param {boolean} asyncMode - use sendAsync instead of send
    * @returns {Promise<void>}
    */
-  async setPixel(x = 0, y = 0, r = 127, g = 127, b = 127, asyncMode = false) {
+  async setPixel(x = 0, y = 0, r = 127, g = 127, b = 127) {
     const payload = new Uint8Array([
       10, 0x00, 0x05, 0x01, 0x00,
       this.clamp(r, 0, 255),
@@ -539,7 +492,7 @@ export class iDotMatrix {
       this.clamp(x, 0, (this.width ?? 16) - 1),
       this.clamp(y, 0, (this.height ?? 16) - 1),
     ]);
-    return await (asyncMode ? this.sendAsync(payload) : this.send(payload));
+    return await this.send(payload);
   }
 
   /**
@@ -681,8 +634,9 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async setMicType(type) {
+    // Five-byte short microphone command (LE16 length = 5).
     const payload = new Uint8Array([
-      0x06, 0x00, 0x0B, this.#MIN_VALUE,
+      0x05, 0x00, 0x0B, this.#MIN_VALUE,
       Math.max(0, Math.min(1, type))
     ]);
     return await this.send(payload);
@@ -778,7 +732,7 @@ export class iDotMatrix {
     this.#isWritingRythm = true;
 
     try {
-      await this.sendAsync(payload);
+      await this.send(payload);
     } catch (err) {
       console.warn("[GATT Bypass] Audio frame dropped to prevent lagging");
       console.error(err);
@@ -829,7 +783,7 @@ export class iDotMatrix {
   }
 
   /**
-   * Configures the clock style using the legacy protocol (Injects the RGB color)
+   * Configures the clock style with an RGB color
    * @param {number} style - Visual style index (0 to 7)
    * @param {boolean} [visibleDate=true] - Show or hide the date/extra block
    * @param {boolean} [hour24=true] - 24h or 12h format
@@ -1019,16 +973,6 @@ export class iDotMatrix {
   }
 
   /**
-   * Convertit l'index de configuration de l'UI en secondes réelles
-   * @param {number} timeSign - L'index de durée (1 à 4)
-   * @returns {number} Durée en secondes (par défaut 5)
-   */
-  getMaterialDuration(timeSign) {
-    const durations = { 1: 10, 2: 30, 3: 60, 4: 300 };
-    return durations[timeSign] || 5;
-  }
-
-  /**
    * Converts a string into a continuous array of binary font bitmaps using HTML5 Canvas rendering
    * @param {string} text - The input text to convert into bitmaps
    * @param {number} [targetHeight=32] - The matrix rendering height block (16, 32, or 64)
@@ -1044,11 +988,12 @@ export class iDotMatrix {
       throw new Error(`[Matrix] targetHeight (${targetHeight}px) can't exceed screen height (${this.height}px).`);
     }
 
-    const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
-    
-    canvas.width = charWidth;
-    canvas.height = targetHeight;
+    if (!this.canvas?.createScratchCanvas) {
+      throw new Error('textToBitmaps requires a Canvas adapter implementing createScratchCanvas');
+    }
+    const canvas = this.canvas.createScratchCanvas(charWidth, targetHeight);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D context unavailable for text rendering');
     
     ctx.font = fontConfig;
     ctx.textBaseline = "middle";
@@ -1138,20 +1083,8 @@ export class iDotMatrix {
       ...textBitmaps
     ]);
 
-    const crcBytes = this.#uint32ToBytesLE(this.#calculateCRC32(innerPayload));
-    const innerPayloadLenBytes = this.#uint32ToBytesLE(innerPayload.length);
-    const totalLenBytes = this.#uint16ToBytesLE(16 + innerPayload.length);
-
-    const fullPayload = new Uint8Array([
-      ...totalLenBytes,
-      0x03, 0x00, 0x00,
-      ...innerPayloadLenBytes,
-      ...crcBytes,
-      0x00, 0x00, slotIndex,
-      ...innerPayload
-    ]);
-
-    await this.sendAsync(fullPayload, 25);
+    const frames = encodeMediaBlocks(innerPayload, { type: 3, slotIndex });
+    return this.#transferBlocks(frames, 'text', 25);
   }
 
   /**
@@ -1160,107 +1093,36 @@ export class iDotMatrix {
    * @returns {Promise<void>}
    */
   async sendDIYImage(buffer) {
-    const pngData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-    const len = pngData.length;
-
-    const chunks = this._splitIntoChunks(pngData, 4096).map((chunk, index) => {
-      const clen = chunk.length + 9;
-
-      return new Uint8Array([
-        (clen >>> 8) & 0xFF,
-        clen & 0xFF,
-        0x00, 0x00,
-        index > 0 ? 0x02 : 0x00,
-        
-        (len >>> 24) & 0xFF,
-        (len >>> 16) & 0xFF,
-        (len >>> 8) & 0xFF,
-        len & 0xFF,
-        
-        ...chunk
-      ]);
-    });
-
-    for (const index in chunks) {
-      const chunk = chunks[index];
-      
-      console.log(`[Matrix] Sending PNG chunk ${Number(index)}/${chunks.length}`);
-      await this.sendAsync(chunk, 35);
-    }
+    return this.#transferBlocks(encodeDIYBlocks(buffer), 'diy', 35);
   }
 
-  /**
-   * Processes, chunks, and uploads a raw PNG byte buffer using the official protocol
-   * @param {ArrayBuffer|Uint8Array} buffer - Raw binary data of the PNG file
-   * @param {number} [mode=12] - Render mode or component ID (default: 12)
-   * @returns {Promise<void>}
-   */
-  async sendImage(buffer, mode = 12) {
-    const imageData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-
-    const crc = this.#uint32ToBytesLE(this.#calculateCRC32(imageData));
-    const len = this.#uint32ToBytesLE(imageData.length);
-
-    const chunks = this._splitIntoChunks(imageData, 4096).map((chunk, index) => {
-      const length = chunk.length + 16;
-      
-      const byteLen = this.#uint16ToBytesLE(length);
-      
-      const timeValue = mode === 12 ? 0 : this.getMaterialDuration(mode);
-      const byteTime = this.#uint16ToBytesLE(timeValue);
-
-      return new Uint8Array([
-        ...byteLen,
-        0x02, 0x00,
-        index > 0 ? 0x02 : 0x00,
-        ...len,
-        ...crc,
-        ...byteTime,
-        mode,
-        ...chunk,
-      ]);
-    });
-
-    for (const index in chunks) {
-      const chunk = chunks[index];
-      
-      console.log(`[Matrix] Sending PNG chunk ${Number(index) + 1}/${chunks.length}`);
-      await this.sendAsync(chunk, 35);
-    }
+  /** Uploads PNG data with independent slot and duration options. */
+  async sendImage(buffer, options = {}) {
+    const { slotIndex = 12, durationValue = 0 } = this.#mediaOptions(options);
+    return this.#transferBlocks(encodeMediaBlocks(buffer, {
+      type: 2, slotIndex, durationValue,
+    }), 'image', 35);
   }
-  
-  /**
-   * Transmits a raw, compressed GIF image file to the matrix
-   * @param {ArrayBuffer|Uint8Array} buffer - Raw binary contents of the .gif file
-   * @returns {Promise<void>}
-   */
-  async sendGif(buffer) {
-    const gifData = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-    
-    const crcBytes = this.#uint32ToBytesLE(this.#calculateCRC32(gifData));
-    const lenBytes = this.#uint32ToBytesLE(gifData.length);
 
-    const chunks = this._splitIntoChunks(gifData, 4096).map((chunk, index) => {
-      const clenBytes = this.#uint16ToBytesLE(chunk.length + 16);
+  /** Uploads GIF data with the same option defaults as images. */
+  async sendGif(buffer, options = {}) {
+    const { slotIndex = 12, durationValue = 0 } = this.#mediaOptions(options);
+    return this.#transferBlocks(encodeMediaBlocks(buffer, {
+      type: 1, slotIndex, durationValue,
+    }), 'gif', 10);
+  }
 
-      return new Uint8Array([
-        ...clenBytes,
-        0x01, 0x00,
-        index > 0 ? 0x02 : 0x00,
-        ...lenBytes,
-        ...crcBytes,
-        0x05, 0x00, 0x0d,
-        ...chunk
-      ]);
-    });
-
-    for (const index in chunks) {
-      const chunk = chunks[index];
-      
-      console.log(`[Matrix] Sending GIF chunk ${Number(index) + 1}/${chunks.length}`);
-      await this.sendAsync(chunk, 10);
-      await this.#delay(150);
+  #mediaOptions(options) {
+    if (!options || typeof options !== 'object' || Array.isArray(options) ||
+        ![Object.prototype, null].includes(Object.getPrototypeOf(options))) {
+      throw new TypeError('Media options must be an object with slotIndex and durationValue');
     }
+    for (const key of Object.keys(options)) {
+      if (key !== 'slotIndex' && key !== 'durationValue') {
+        throw new TypeError(`Unknown media option: ${key}`);
+      }
+    }
+    return options;
   }
 
   /**
