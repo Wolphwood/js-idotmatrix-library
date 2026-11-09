@@ -32,11 +32,13 @@ I tried my best, I swear.
 
 - **[Documentation de l'API](./doc/fr/doc.md)**
 - **[Documentation du protocole](./doc/fr/protocol.md)**
+- [BLE](./doc/fr/ble.md), [Canvas](./doc/fr/canvas.md), [Transferts et migration](./doc/fr/sdk-transfers.md)
 
 ### English
 
 - **[API documentation](./doc/en/doc.md)**
 - **[Protocol documentation](./doc/en/protocol.md)**
+- [BLE](./doc/en/ble.md), [Canvas](./doc/en/canvas.md), [Transfers and migration](./doc/en/sdk-transfers.md)
 
 ---
 
@@ -69,38 +71,19 @@ Calling `connect()` without a device opens the Web Bluetooth device picker. The 
 
 ### Node.js
 
-Use `NodeWebBluetoothAdapter`, scan for the matrix, then connect using the discovered device ID or name.
+Use the Node entrypoint, which provides BLE and Canvas adapters:
 
 ```javascript
-import { iDotMatrix } from "./iDotMatrix.js";
-import { NodeWebBluetoothAdapter } from "./bluetooth/NodeWebBluetoothAdapter.js";
+import { createNodeMatrix } from "./node.js";
 
-const ble = new NodeWebBluetoothAdapter();
-
-const matrix = new iDotMatrix({
-  throwErrors: true,
-  bluetoothadapter: ble
-});
-
-const devices = await ble.scan({
-  duration: 4000,
-  prefix: "IDM-"
-});
-
-if (!devices.length) {
-  throw new Error("No iDotMatrix device found");
-}
-
+const matrix = createNodeMatrix({ fragmentSize: 20, ackTimeoutMs: 5000 });
+const devices = await matrix.ble.scan({ duration: 4000, prefix: "IDM-" });
+if (!devices.length) throw new Error("No iDotMatrix device found");
 await matrix.connect(devices[0].id);
-
-const info = await matrix.getDeviceInfo();
-console.log(info);
-
-await matrix.screenOn();
 await matrix.setBrightness(80);
 ```
 
-`NodeWebBluetoothAdapter.scan()` supports `duration`, `prefix`, `suffix`, and `firstOnly`.
+Install dependencies with `npm install`. `createNodeMatrix()` requires the native `canvas` package; BLE-only callers can inject `NodeWebBluetoothAdapter` into `iDotMatrix` without a Canvas. Node scanning supports `duration`, `prefix`, `suffix`, and `firstOnly`.
 
 ---
 
@@ -127,6 +110,8 @@ The SDK implements most features exposed by the official iDotMatrix application,
 
 Image, GIF, and text transfers use the reverse-engineered iDotMatrix framing protocol, including CRC32 checksums and logical 4096-byte data blocks where required.
 
+Prefer independent media options: `await matrix.sendImage(pngBytes, { slotIndex: 12, durationValue: 0 })`. GIF defaults are slot 12 and duration 0. Slot 12 forces duration to zero. Media methods return `{family, status, raw, sentBlocks, totalBlocks}` after a terminal application ACK; `send()` only await local writes.
+
 ### Device detection
 
 `getDeviceInfo()` reads the connected matrix information and detects known panel dimensions.
@@ -148,8 +133,9 @@ The SDK itself contains the iDotMatrix protocol implementation. BLE-specific beh
 
 ```text
 iDotMatrix
-├── WebBluetoothAdapter
-└── NodeWebBluetoothAdapter
+└── GattAdapter
+    ├── WebBluetoothAdapter
+    └── NodeWebBluetoothAdapter
 ```
 
 The matrix class configures the adapter with:
@@ -166,11 +152,11 @@ This separation makes it possible to add other transports/adapters without rewri
 
 ## ⚠️ Current Limitations
 
-- `detectMaxMtu()` probes supported write sizes but currently does **not** change the 20-byte fragmentation size used by `send()` and `sendAsync()`.
-- `textToBitmaps()` uses `document.createElement("canvas")` and is therefore browser-native. Node.js requires externally generated bitmaps or a compatible DOM/canvas implementation.
-- The internal canvas API (`ctx`, `clearInternalCanvas()`, `internalCanvasToBuffer()`) exists, but internal canvas initialization is currently disabled.
-- Some notification responses and experimental firmware commands are currently logged rather than exposed through a finalized event API.
-- Some reverse-engineered protocol details may be incomplete or firmware-dependent.
+- Media ACK mappings remain experimental and require validation on physical 16×16, 32×32 and 64×64 devices.
+- Media transfers reject on error status, disconnect or missing ACK. A terminal ACK does not prove persistence across power cycles.
+- Text rendering and Canvas encoding work in browsers and Node.js through Canvas adapters.
+- Typed notifications are exposed through `on()` / `off()`; `on()` returns an unsubscribe function.
+- Explicit `disconnect()` disables automatic reconnection until `connect()` is called.
 
 See the full API and protocol documentation for command-specific details.
 
@@ -188,8 +174,8 @@ These notes are useful as reverse-engineering references but should not be treat
 
 This implementation and protocol reverse-engineering were made possible thanks to the work and tools from the following repositories:
 
-- **[8none1/idotmatrix](https://github.com/8none1/idotmatrix)** and **[derkalle4/python3-idotmatrix-library](https://github.com/derkalle4/python3-idotmatrix-library)** — reference implementations that helped understand GIF features and matrix communication layouts.
-- **[skylot/jadx](https://github.com/skylot/jadx)** — decompilation tool used to analyze the original application's bytecode and recover protocol behavior.
+- **[8none1/idotmatrix](https://github.com/8none1/idotmatrix)** and **[derkalle4/python3-idotmatrix-library](https://github.com/derkalle4/python3-idotmatrix-library)** - reference implementations that helped understand GIF features and matrix communication layouts.
+- **[skylot/jadx](https://github.com/skylot/jadx)** - decompilation tool used to analyze the original application's bytecode and recover protocol behavior.
 
 ---
 

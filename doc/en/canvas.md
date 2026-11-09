@@ -1,164 +1,19 @@
-# CanvasAdapter
+# CanvasAdapter - Browser and Node.js
 
-`CanvasAdapter` provides a common rendering layer for Web and Node.js environments. `iDotMatrix` therefore no longer needs to depend directly on the DOM or on a specific Canvas implementation.
+`CanvasAdapter` defines a common 2D rendering contract. `WebCanvasAdapter` creates an HTML canvas (or OffscreenCanvas); `NodeCanvasAdapter` uses the native `canvas` package. Both expose `canvas`, `ctx`, `context`, `size`, `width`, `height`, `lastbuffer`, `clear()`, `resize(width,height)`, `createScratchCanvas(width,height)` and `await toBuffer(format='image/png')`.
 
-## Table of contents
-
-- [Architecture](#architecture)
-- [CanvasAdapter](#canvasadapter)
-  - [Properties](#properties)
-  - [`size`](#size)
-  - [`ctx`](#ctx)
-  - [`clear()`](#clear)
-  - [`resize()`](#resize)
-  - [`toBuffer()`](#tobuffer)
-- [Web](#web)
-- [Node.js](#nodejs)
-- [Using it with iDotMatrix](#using-it-with-idotmatrix)
-
----
-
-## Architecture
-
-```text
-iDotMatrix
-    ↓
-CanvasAdapter
-├── WebCanvasAdapter
-└── NodeCanvasAdapter
-```
-
-The adapter stores the canvas, its 2D context, its dimensions, and the last encoded buffer. Web and Node implementations expose the same public interface while using the native API available in their environment to create and encode the canvas.
-
-## CanvasAdapter
+`clear()` calls native `clearRect`. Resizing validates dimensions and reacquires the 2D context, but clears the image (native Canvas behavior). Web encoding supports `convertToBlob()` and `toBlob()` and rejects null results; Node encoding copies the returned native Buffer to a `Uint8Array`.
 
 ```js
-new CanvasAdapter({
-  width: 16,
-  height: 16
-});
+matrix.canvas.ctx.fillStyle = '#00ff00';
+matrix.canvas.ctx.fillRect(0, 0, matrix.canvas.width, matrix.canvas.height);
+const png = await matrix.canvas.toBuffer();
+await matrix.sendImage(png, { slotIndex: 12 });
 ```
 
-Default dimensions are `16 × 16`.
 
-### Properties
+In browsers, `new iDotMatrix()` creates the Web canvas automatically. In Node.js use `createNodeMatrix()` from `node.js`, or inject `new NodeCanvasAdapter()` with `{ canvasadapter }`. Node SDK instances without a canvas can still send BLE commands, but encoding and `textToBitmaps()` require an adapter.
 
-| Property | Description |
-| --- | --- |
-| `width` | Current canvas width |
-| `height` | Current canvas height |
-| `canvas` | Native canvas instance |
-| `context` | 2D rendering context |
-| `lastbuffer` | Last buffer produced by `toBuffer()` |
+Known device types (`1 = 16×16`, `3 = 32×32`, `4 = 64×64`) synchronize the Canvas dimensions when reported by a firmware notification. Unknown types do not trigger speculative resizing.
 
-### `size`
-
-Returns the current dimensions:
-
-```js
-const { width, height } = canvas.size;
-```
-
-### `ctx`
-
-Returns the 2D context directly:
-
-```js
-const ctx = canvas.ctx;
-
-ctx.fillStyle = "#ff0000";
-ctx.fillRect(0, 0, 8, 8);
-```
-
-The context remains the native Canvas 2D API exposed by the current environment.
-
-### `clear()`
-
-Clears the entire canvas:
-
-```js
-canvas.clear();
-```
-
-If no context is available, the method does nothing.
-
-### `resize()`
-
-Resizes the canvas:
-
-```js
-canvas.resize(32, 32);
-```
-
-Non-numeric, non-finite, zero, or negative values are ignored. The 2D context is acquired again after resizing.
-
-### `toBuffer()`
-
-Encodes the canvas content and returns its bytes:
-
-```js
-const buffer = await canvas.toBuffer();
-```
-
-The result is stored in `lastbuffer`.
-
-Encoding is implemented by the concrete adapter: browsers use their Canvas/Blob API while Node.js uses the encoder provided by its Canvas implementation.
-
-## Web
-
-`WebCanvasAdapter` creates a canvas using the browser Canvas API.
-
-```js
-const canvas = new WebCanvasAdapter({
-  width: 16,
-  height: 16
-});
-
-canvas.ctx.fillStyle = "#00ff00";
-canvas.ctx.fillRect(0, 0, 16, 16);
-
-const buffer = await canvas.toBuffer();
-```
-
-The Web adapter requires an environment providing browser Canvas APIs.
-
-## Node.js
-
-`NodeCanvasAdapter` exposes the same interface in Node.js through the Canvas implementation configured by the library.
-
-```js
-const canvas = new NodeCanvasAdapter({
-  width: 16,
-  height: 16
-});
-
-canvas.ctx.fillStyle = "#00ff00";
-canvas.ctx.fillRect(0, 0, 16, 16);
-
-const buffer = await canvas.toBuffer();
-```
-
-Rendering code using `ctx` can therefore remain identical between Web and Node.js.
-
-## Using it with iDotMatrix
-
-Image rendering and encoding now belong to `CanvasAdapter`. The following former `iDotMatrix` internal APIs have been removed:
-
-```text
-ctx
-clearInternalCanvas()
-internalCanvasToBuffer()
-```
-
-Use the adapter directly:
-
-```js
-matrix.canvas.clear();
-
-const ctx = matrix.canvas.ctx;
-ctx.fillStyle = "#ff0000";
-ctx.fillRect(0, 0, 16, 16);
-
-const buffer = await matrix.canvas.toBuffer();
-await matrix.sendImage(buffer);
-```
+Rendering has been tested with simulated canvases, not against real LED screens.

@@ -1,164 +1,32 @@
-# CanvasAdapter
+# CanvasAdapter - Web et Node.js
 
-`CanvasAdapter` fournit une couche de rendu commune aux environnements Web et Node.js. La classe `iDotMatrix` ne dépend ainsi plus directement du DOM ni d'une implémentation Canvas spécifique.
+`CanvasAdapter` est un contrat commun de rendu 2D. `WebCanvasAdapter` crée un Canvas HTML (ou `OffscreenCanvas`), et `NodeCanvasAdapter` utilise le package natif `canvas`. Leur API publique est identique :
 
-## Sommaire
+- `canvas`, `ctx`, `context`, `size`, `width`, `height`, `lastbuffer`
+- `clear()` : efface l'image via `clearRect`
+- `resize(width, height)` : valide les dimensions, change le Canvas et réacquiert le contexte
+- `createScratchCanvas(width, height)` : Canvas auxiliaire, notamment pour les glyphes texte
+- `await toBuffer(format='image/png')` : retourne les octets `Uint8Array`, mis en cache dans `lastbuffer`
 
-- [Architecture](#architecture)
-- [CanvasAdapter](#canvasadapter)
-  - [Propriétés](#propriétés)
-  - [`size`](#size)
-  - [`ctx`](#ctx)
-  - [`clear()`](#clear)
-  - [`resize()`](#resize)
-  - [`toBuffer()`](#tobuffer)
-- [Web](#web)
-- [Node.js](#nodejs)
-- [Utilisation avec iDotMatrix](#utilisation-avec-idotmatrix)
+Un redimensionnement efface le contenu du Canvas, conformément au comportement natif. L'encodage Web accepte `convertToBlob()` et `toBlob()` ; un Blob `null` déclenche une erreur et non une Promise bloquée. L'encodeur Node retourne une copie `Uint8Array` du Buffer natif. Une dépendance native `canvas` est requise pour Node hors tests.
 
----
-
-## Architecture
-
-```text
-iDotMatrix
-    ↓
-CanvasAdapter
-├── WebCanvasAdapter
-└── NodeCanvasAdapter
-```
-
-L'adapter conserve le canvas, son contexte 2D, ses dimensions et le dernier buffer encodé. Les implémentations Web et Node exposent la même interface publique mais utilisent l'API native de leur environnement pour créer et encoder le canvas.
-
-## CanvasAdapter
+## Exemple commun
 
 ```js
-new CanvasAdapter({
-  width: 16,
-  height: 16
-});
+const { ctx } = matrix.canvas;
+ctx.fillStyle = '#00ff00';
+ctx.fillRect(0, 0, matrix.canvas.width, matrix.canvas.height);
+const bytes = await matrix.canvas.toBuffer();
+await matrix.sendImage(bytes, { slotIndex: 12 });
 ```
 
-Les dimensions par défaut sont `16 × 16`.
 
-### Propriétés
+## Initialisation
 
-| Propriété | Description |
-| --- | --- |
-| `width` | Largeur actuelle du canvas |
-| `height` | Hauteur actuelle du canvas |
-| `canvas` | Instance native du canvas |
-| `context` | Contexte de rendu 2D |
-| `lastbuffer` | Dernier buffer produit par `toBuffer()` |
+Navigateur : `new iDotMatrix()` crée automatiquement `WebCanvasAdapter` si le DOM ou OffscreenCanvas existe.
 
-### `size`
+Node : utiliser `createNodeMatrix()` depuis `node.js`, ou injecter `new NodeCanvasAdapter()` dans `new iDotMatrix({ canvasadapter })`. La création sans Canvas en Node est autorisée pour les seules commandes BLE, mais l'encodage et `textToBitmaps()` nécessitent l'adapter.
 
-Retourne les dimensions actuelles :
+`getDeviceInfo()` et les notifications firmware de 9 octets règlent les dimensions du Canvas pour les types connus (`1 → 16×16`, `3 → 32×32`, `4 → 64×64`) ; aucune supposition n'est faite pour les types inconnus.
 
-```js
-const { width, height } = canvas.size;
-```
-
-### `ctx`
-
-Retourne directement le contexte 2D :
-
-```js
-const ctx = canvas.ctx;
-
-ctx.fillStyle = "#ff0000";
-ctx.fillRect(0, 0, 8, 8);
-```
-
-Le contexte reste l'API Canvas 2D native de l'environnement utilisé.
-
-### `clear()`
-
-Efface l'intégralité du canvas :
-
-```js
-canvas.clear();
-```
-
-Si aucun contexte n'est disponible, la méthode ne fait rien.
-
-### `resize()`
-
-Redimensionne le canvas :
-
-```js
-canvas.resize(32, 32);
-```
-
-Les valeurs non numériques, non finies ou inférieures ou égales à zéro sont ignorées. Après redimensionnement, le contexte 2D est récupéré à nouveau.
-
-### `toBuffer()`
-
-Encode le contenu du canvas et retourne ses octets :
-
-```js
-const buffer = await canvas.toBuffer();
-```
-
-Le résultat est conservé dans `lastbuffer`.
-
-L'encodage dépend de l'adapter concret : le navigateur utilise son API Canvas/Blob tandis que Node.js utilise l'encodeur fourni par son implémentation Canvas.
-
-## Web
-
-`WebCanvasAdapter` crée un canvas avec l'API Canvas du navigateur.
-
-```js
-const canvas = new WebCanvasAdapter({
-  width: 16,
-  height: 16
-});
-
-canvas.ctx.fillStyle = "#00ff00";
-canvas.ctx.fillRect(0, 0, 16, 16);
-
-const buffer = await canvas.toBuffer();
-```
-
-Le Web adapter nécessite un environnement disposant des APIs Canvas du navigateur.
-
-## Node.js
-
-`NodeCanvasAdapter` fournit la même interface dans Node.js à l'aide de l'implémentation Canvas configurée par la bibliothèque.
-
-```js
-const canvas = new NodeCanvasAdapter({
-  width: 16,
-  height: 16
-});
-
-canvas.ctx.fillStyle = "#00ff00";
-canvas.ctx.fillRect(0, 0, 16, 16);
-
-const buffer = await canvas.toBuffer();
-```
-
-Le code de rendu utilisant `ctx` peut ainsi rester identique entre Web et Node.js.
-
-## Utilisation avec iDotMatrix
-
-Le rendu et l'encodage d'image appartiennent désormais au `CanvasAdapter`. Les anciennes API internes de `iDotMatrix` suivantes ont été supprimées :
-
-```text
-ctx
-clearInternalCanvas()
-internalCanvasToBuffer()
-```
-
-Utilisez directement l'adapter :
-
-```js
-matrix.canvas.clear();
-
-const ctx = matrix.canvas.ctx;
-ctx.fillStyle = "#ff0000";
-ctx.fillRect(0, 0, 16, 16);
-
-const buffer = await matrix.canvas.toBuffer();
-await matrix.sendImage(buffer);
-```
+Les tests utilisent des faux Canvas. Le rendu des polices et leur conformité binaire doivent encore être confirmés sur matériel réel.

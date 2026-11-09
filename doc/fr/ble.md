@@ -1,122 +1,48 @@
-# BluetoothAdapter
+# Adaptateurs Bluetooth BLE - version intégrée
 
-Les adapters Bluetooth isolent le transport BLE du protocole iDotMatrix. La classe principale peut ainsi utiliser la même logique de commandes dans un navigateur et dans Node.js.
+Les deux transports `WebBluetoothAdapter` et `NodeWebBluetoothAdapter` partagent le moteur `GattAdapter` : découverte séparée, connexion/reconnexion GATT, un seul listener de notification, écriture séquentielle, événements de déconnexion et lecture optionnelle des descripteurs.
 
-## Sommaire
+## Protocole et limites
 
-- [Architecture](#architecture)
-- [Ressources BLE](#ressources-ble)
-- [WebBluetoothAdapter](#webbluetoothadapter)
-- [NodeWebBluetoothAdapter](#nodewebbluetoothadapter)
-  - [`scan()`](#scan)
-- [Connexion](#connexion)
-- [Déconnexion](#déconnexion)
-- [Notifications](#notifications)
-- [Écriture](#écriture)
-- [MTU](#mtu)
+| Élément | UUID |
+|---|---|
+| Service iDotMatrix | `0x00FA` |
+| Caractéristique d'écriture | `0xFA02` |
+| Caractéristique de notifications par défaut | `0xFA03` |
 
----
+La caractéristique de notification `0xFA03` est configurable et, si absente, l'adapter cherche **une caractéristique unique** avec `notify` ou `indicate` sous le service attendu. Le SDK ne garantit pas qu'elle soit correcte sur chaque firmware ; préciser le UUID si la découverte est ambiguë.
 
-## Architecture
+`fragmentSize=20` représente la quantité maximale de données transmise par appel d'écriture côté SDK et non le MTU négocié. `ble.attMtu` est `null` tant que le runtime ne l'expose pas. La taille de fragment est configurable sans probe dangereuse ; les contraintes de la plate-forme restent applicables.
 
-```text
-iDotMatrix
-    ↓
-BluetoothAdapter
-├── WebBluetoothAdapter
-└── NodeWebBluetoothAdapter
-```
-
-`iDotMatrix` construit les commandes du protocole. L'adapter BLE se charge uniquement de découvrir le périphérique, établir la connexion GATT, écrire sur la caractéristique et recevoir les notifications.
-
-## Ressources BLE
-
-| Ressource | UUID |
-| --- | --- |
-| Service | `0x00FA` |
-| Écriture | `0xFA02` |
-| Notifications | `0xFA03` |
-
-## WebBluetoothAdapter
-
-`WebBluetoothAdapter` utilise Web Bluetooth. Il constitue l'adapter navigateur de la bibliothèque.
+## Web
 
 ```js
-const matrix = new iDotMatrix({
-  bluetoothadapter: new WebBluetoothAdapter()
-});
-
-await matrix.connect();
+import { iDotMatrix } from './iDotMatrix.js';
+import { WebBluetoothAdapter } from './bluetooth/WebBluetoothAdapter.js';
+const ble = new WebBluetoothAdapter();
+const matrix = new iDotMatrix({ bluetoothadapter: ble, fragmentSize: 20 });
+await matrix.connect(); // À appeler lors d'un clic utilisateur, sur navigateur compatible HTTPS
 ```
 
-Sans identifiant de périphérique, la connexion Web peut ouvrir le sélecteur Bluetooth du navigateur. Le filtrage par défaut cible les périphériques iDotMatrix dont le nom commence par `IDM-`.
+Le filtre Web par défaut cherche `IDM-`. `scan({prefix:''})` demande tous les appareils et autorise le service attendu. `scan()` renvoie l'objet natif sélectionné, pas un tableau.
 
-## NodeWebBluetoothAdapter
-
-`NodeWebBluetoothAdapter` fournit le transport BLE sous Node.js via le backend Web Bluetooth utilisé par le projet.
+## Node
 
 ```js
-const ble = new NodeWebBluetoothAdapter();
-
-const matrix = new iDotMatrix({
-  bluetoothadapter: ble
-});
+import { createNodeMatrix } from './node.js';
+const matrix = createNodeMatrix();
+const devices = await matrix.ble.scan({ duration: 4000, prefix: 'IDM-', firstOnly: false });
+if (devices.length) await matrix.connect(devices[0].id);
 ```
 
-### `scan()`
+`scan()` retourne des entrées `{ id, name, raw }`. La connexion accepte l'ID, le nom (si connu) ou l'objet natif. Le backend `webbluetooth` est importé au moment du scan ; le package doit être installé sur la machine Node.
 
-Recherche les périphériques disponibles :
+## Événements et durée des opérations
 
-```js
-const devices = await ble.scan({
-  duration: 4000,
-  prefix: "IDM-"
-});
-```
+`ble.startNotifications(callback)` déduplique la même fonction et ne réinstalle pas plusieurs listeners sur une connexion. `ble.stopNotifications()` désenregistre tous les callbacks. `ble.onDisconnect(callback)` retourne une fonction de désinscription.
 
-Options supportées :
+Les transferts médias sérialisent leurs fragments et attendent le statut applicatif par famille (`image`, `gif`, `text`, `diy`). Les commandes simples `send()` ne garantissent que les écritures locales. Si la liaison tombe pendant un transfert, la Promise est rejetée ; une commande ultérieure peut se reconnecter automatiquement, mais **pas** le bloc interrompu. `disconnect()` explicite empêche toute reconnexion automatique jusqu'à `connect()`.
 
-| Option | Description |
-| --- | --- |
-| `duration` | Durée de recherche |
-| `prefix` | Préfixe du nom |
-| `suffix` | Suffixe du nom |
-| `firstOnly` | Arrête/limite la recherche au premier résultat correspondant |
+`matrix.getDeviceInfo()` lit `0x2901` si disponible, conserve les informations déjà reçues et synchronise les dimensions Canvas. `matrix.requestDeviceInfo()` transmet `04 00 01 80` puis attend une réponse `01 80` de 9 octets.
 
-Un périphérique découvert peut ensuite être fourni à `connect()` via son identifiant ou son nom selon l'adapter.
-
-## Connexion
-
-La connexion publique reste gérée depuis `iDotMatrix` :
-
-```js
-await matrix.connect(deviceId);
-```
-
-Une fois connecté, l'adapter conserve le périphérique, le serveur GATT, le service et les caractéristiques nécessaires au protocole.
-
-## Déconnexion
-
-```js
-await matrix.disconnect();
-```
-
-La déconnexion passe par l'adapter afin de garder la gestion du transport hors de la logique protocolaire.
-
-## Notifications
-
-L'adapter démarre les notifications sur `0xFA03` et transmet les données reçues à la couche `iDotMatrix`.
-
-Les réponses firmware sont ensuite interprétées par la classe principale. Une partie des réponses expérimentales peut encore être journalisée plutôt qu'exposée par une API événementielle stabilisée.
-
-## Écriture
-
-Les commandes sont écrites sur `0xFA02` sans réponse lorsque le protocole le permet.
-
-`iDotMatrix.send()` se charge du découpage des payloads et délègue chaque fragment à l'adapter.
-
-## MTU
-
-`detectMaxMtu()` permet de sonder les tailles d'écriture acceptées par la connexion BLE.
-
-À l'heure actuelle, cette détection ne modifie pas automatiquement la taille de fragmentation utilisée par `send()` / `sendAsync()`, qui reste à 20 octets.
+**Validation :** tests simulés uniquement, à confronter aux trois modèles physiques et firmwares ciblés.

@@ -14,13 +14,13 @@ The `iDotMatrix` class controls iDotMatrix LED panels over Bluetooth Low Energy.
 - [Utilities and properties](#utilities-and-properties)
   - [`clamp()`](#clampvalue-min-max)
   - [`_splitIntoChunks()`](#_splitintochunksarray-chunksize)
-  - [`send()` / `sendAsync()`](#sendpayload-delayms-8-/-sendasyncpayload-msdelay-8)
+  - [`send()`](#sendpayload-delayms-8)
 - [Screen and drawing](#screen-and-drawing)
   - [`screenOn()` / `screenOff()`](#screenon-/-screenoff)
   - [`setBrightness()`](#setbrightnesslevel)
   - [`setFullscreenColor()`](#setfullscreencolorr-g-b)
   - [`setImageMode()`](#setimagemodemode-1)
-  - [`setPixel()`](#setpixelx-y-r-g-b-asyncmode-false)
+  - [`setPixel()`](#setpixelx-y-r-g-b)
   - [`clearPixel()`](#clearpixelx-y)
   - [`setEffect()`](#seteffectstyle-speed-rgbvalues)
   - [`freezeScreen()` ⚠️ Experimental](#freezescreen-experimental)
@@ -48,9 +48,8 @@ The `iDotMatrix` class controls iDotMatrix LED panels over Bluetooth Low Energy.
   - [`textToBitmaps()`](#texttobitmapstext-targetheight-32-fontconfig-bold-22px-sans-serif)
   - [`sendText()`](#sendtexttextbitmaps-numchars-textmode-1-speed-95-textcolormode-1-textcolor-25500-textbgmode-0-textbgcolor-000-slotindex-12)
 - [Images and GIF](#images-and-gif)
-  - [`getMaterialDuration()`](#getmaterialdurationtimesign)
   - [`sendDIYImage()`](#senddiyimagebuffer)
-  - [`sendImage()`](#sendimagebuffer-mode-12)
+  - [`sendImage()`](#sendimagebuffer-options-)
   - [`sendGif()`](#sendgifbuffer)
 - [Multi-screen](#multi-screen)
   - [`sendJoint()` ⚠️ Experimental](#sendjointmode-experimental)
@@ -61,8 +60,8 @@ The `iDotMatrix` class controls iDotMatrix LED panels over Bluetooth Low Energy.
 
 Canvas and Bluetooth layers now have dedicated documentation so this reference can stay focused on the `iDotMatrix` API.
 
-- [CanvasAdapter](./canvas.md) — Web/Node.js rendering, 2D context, resizing, and encoding.
-- [BluetoothAdapter](./ble.md) — BLE transport, Web Bluetooth, Node.js, scanning, connection, and notifications.
+- [CanvasAdapter](./canvas.md) - Web/Node.js rendering, 2D context, resizing, and encoding.
+- [BluetoothAdapter](./ble.md) - BLE transport, Web Bluetooth, Node.js, scanning, connection, and notifications.
 
 ## Utilities and properties
 
@@ -72,8 +71,8 @@ Clamps a number between `min` and `max`.
 ### `_splitIntoChunks(array, chunkSize)`
 Splits a `Uint8Array` into chunks. Publicly reachable but primarily an internal helper.
 
-### `send(payload, delayMs = 8)` / `sendAsync(payload, msDelay = 8)`
-Ensure a connection, split the payload into 20-byte BLE fragments, write them sequentially without response, and throttle writes with a delay. In the current version both methods have the same general behavior.
+### `send(payload, delayMs = 8)`
+Operations are serialized. Fragments contain at most `fragmentSize` bytes (default 20). These methods resolve after local writes without confirming rendering.
 
 ## Screen and drawing
 
@@ -89,8 +88,8 @@ Fills the display with one RGB color. Components are clamped to `0..255`.
 ### `setImageMode(mode = 1)`
 Configures DIY/drawing mode. The SDK accepts `0..255`; `0` disables and `1` enables the standard mode. Other values are firmware-dependent.
 
-### `setPixel(x, y, r, g, b, asyncMode = false)`
-Changes one pixel. Coordinates are clamped to detected dimensions (16×16 fallback when unknown). `asyncMode=true` uses `sendAsync()`.
+### `setPixel(x, y, r, g, b)`
+Changes one pixel. Coordinates are clamped to detected dimensions (16×16 fallback when unknown).
 
 ### `clearPixel(x, y)`
 Equivalent to `setPixel(x, y, 0, 0, 0)`.
@@ -151,10 +150,10 @@ Enables/disables display flipping.
 Configures an eco-mode schedule. Hours `0..23`, minutes `0..59`, brightness `5..100`.
 
 ### `readScreenLight()` ⚠️ Experimental
-Requests the screen sleep timeout. The notification response is currently logged to the console.
+Requests the screen sleep timeout. The notification response is exposed through the `response` event.
 
 ### `askStatus()`
-Requests the active display mode. The notification response is currently logged.
+Requests the active display mode. The notification response is exposed through events.
 
 ### `deleteDeviceData()`
 Sends the device data reset command. Use with care.
@@ -166,9 +165,9 @@ Sends the device data reset command. Use with care.
 ## Text
 
 ### `textToBitmaps(text, targetHeight = 32, fontConfig = "bold 22px sans-serif")`
-Renders each character to a monochrome bitmap through an HTML canvas. `targetHeight` is intended for `16`, `32`, or `64` and cannot exceed `matrix.height`.
+Renders each character to a monochrome bitmap through a Canvas adapter. `targetHeight` is intended for `16`, `32`, or `64` and cannot exceed `matrix.height`.
 
-> This method uses `document.createElement("canvas")` and is therefore **browser-native**. Node.js needs a compatible DOM/canvas implementation or externally generated bitmaps.
+> Works in browsers and Node.js with an adapter implementing `createScratchCanvas()`, including `NodeCanvasAdapter`.
 
 ### `sendText(textBitmaps, numChars, textMode = 1, speed = 95, textColorMode = 1, textColor = [255,0,0], textBgMode = 0, textBgColor = [0,0,0], slotIndex = 12)`
 Builds the text payload, computes CRC32, and uploads it to the selected memory slot. `textMode` is `0..7`, speed `1..100`, text color mode `1..4`, background mode `0..2`, and default slot is `12`.
@@ -181,16 +180,14 @@ await matrix.sendText(bitmaps, text.length);
 
 ## Images and GIF
 
-### `getMaterialDuration(timeSign)`
-Maps `1 → 10 s`, `2 → 30 s`, `3 → 60 s`, `4 → 300 s`; other values return `5 s`.
 
 ### `sendDIYImage(buffer)`
 Uploads PNG data through the DIY protocol in logical 4096-byte blocks.
 
-### `sendImage(buffer, mode = 12)`
-Uploads PNG data using the official framing with total length and CRC32. `mode=12` is the default direct display mode; modes `1..4` use `getMaterialDuration()`.
+### `sendImage(buffer, options = {})`
+Uploads PNG data with total length and CRC32. `options` must be an object containing only `slotIndex` (default 12) and `durationValue` (default 0). Numeric arguments are rejected.
 
-### `sendGif(buffer)`
+### `sendGif(buffer, options = {})`
 Uploads compressed GIF data with total length and CRC32 in logical 4096-byte blocks.
 
 All three methods accept `ArrayBuffer` or `Uint8Array`.
@@ -199,3 +196,20 @@ All three methods accept `ArrayBuffer` or `Uint8Array`.
 
 ### `sendJoint(mode)` ⚠️ Experimental
 Sends a multi-screen joint/transition mode. Exact values remain firmware-dependent.
+
+## Configuration, connection and events
+
+`new iDotMatrix(options)` accepts `bluetoothadapter`, `canvasadapter`, `width`, `height`, `throwErrors` (default `true`), `fragmentSize` (positive integer, default 20), and `ackTimeoutMs` (positive, default 5000 ms). Rendering without a DOM requires an injected Canvas. `throwErrors=false` does not suppress connection or transfer rejections.
+
+### `connect(deviceId)` / `disconnect()`
+Connect by ID, name or native device; browsers open a picker without a target. `connect()` enables notifications and returns the device. `disconnect()` interrupts transfers and disables automatic reconnection until the next `connect()`.
+
+### `getDeviceInfo()` / `requestDeviceInfo({ timeoutMs } = {})`
+`getDeviceInfo()` reads optional descriptor `0x2901`. Its result exposes `id`, `name`, `model`, `width`, `height`, `screenType`, `mcuVersion`, `descriptorAvailable`, `descriptorDimensions`, `firmwareDimensions`, `dimensionConflict`, `mtu`, `fragmentSize`. Recognized descriptor dimensions take precedence during this call; conflicts emit `deviceProfileConflict`. `mtu` is `null` with the supplied adapters. `requestDeviceInfo()` queries and awaits the typed firmware response, using `ackTimeoutMs` by default.
+
+### `on(name, callback)` / `off(name, callback)` / `emit(name, detail)`
+`on()` returns an unsubscribe function; `off()` removes the callback. Events: `connected`, `disconnected`, `notification`, `response`, `deviceInfo`, `deviceProfileConflict`, `passwordRequired`, `displayStatus`, `timeAck`, `passwordOrDrawingResponse`.
+
+
+### Transfer options
+`sendImage(data, {slotIndex: 12, durationValue: 0})` separates index and duration. `sendGif(data, {slotIndex: 12, durationValue: 0})` uses those defaults. Slot 12 forces duration to zero. Text, image, GIF and DIY await a terminal ACK and return `{family, status, raw, sentBlocks, totalBlocks}`; unknown/error statuses, disconnects and timeouts reject. See [transfers and migration](sdk-transfers.md).

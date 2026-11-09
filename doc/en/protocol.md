@@ -29,7 +29,7 @@
 - [CRC32](#crc32)
 - [`sendText()`](#sendtext)
 - [`sendDIYImage()`](#senddiyimagebuffer)
-- [`sendImage()`](#sendimagebuffer-mode-12)
+- [`sendImage()`](#sendimagebuffer-options-)
 - [`sendGif()`](#sendgifbuffer)
 
 ---
@@ -39,16 +39,16 @@
 This page describes the bytes actually emitted by the current `iDotMatrix.js`. Multi-byte values marked `LE` are little-endian.
 
 ## `screenOn()` / `screenOff()`
-`[0x05, 0x00, 0x07, 0x01, state]` — `state`: `1` ON, `0` OFF.
+`[0x05, 0x00, 0x07, 0x01, state]` - `state`: `1` ON, `0` OFF.
 
 ## `setBrightness(level)`
-`[0x05, 0x00, 0x04, 0x80, level]` — `level` clamped to `5..100`.
+`[0x05, 0x00, 0x04, 0x80, level]` - `level` clamped to `5..100`.
 
 ## `setFullscreenColor(r, g, b)`
-`[0x07, 0x00, 0x02, 0x02, r, g, b]` — RGB `0..255`.
+`[0x07, 0x00, 0x02, 0x02, r, g, b]` - RGB `0..255`.
 
 ## `setImageMode(mode)`
-`[0x05, 0x00, 0x04, 0x01, mode]` — `mode` `0..255`; `0` disables, `1` enables standard DIY mode.
+`[0x05, 0x00, 0x04, 0x01, mode]` - `mode` `0..255`; `0` disables, `1` enables standard DIY mode.
 
 ## `setPixel(x, y, r, g, b)`
 `[0x0A, 0x00, 0x05, 0x01, 0x00, r, g, b, x, y]`. `clearPixel()` sends RGB = 0,0,0.
@@ -57,22 +57,22 @@ This page describes the bytes actually emitted by the current `iDotMatrix.js`. M
 `[(colors*3)+7, 0x00, 0x03, 0x02, style, speed, colors, ...RGB]`. Palette of 2 to 7 colors; style 0..6; speed 1..100.
 
 ## `setScoreboard(score1, score2)`
-`[0x08, 0x00, 0x0A, 0x80, score1_LE16, score2_LE16]` — scores `0..999`.
+`[0x08, 0x00, 0x0A, 0x80, score1_LE16, score2_LE16]` - scores `0..999`.
 
 ## `setChronograph(mode)`
-`[0x05, 0x00, 0x09, 0x80, mode]` — `0` reset, `1` start, `2` pause, `3` resume.
+`[0x05, 0x00, 0x09, 0x80, mode]` - `0` reset, `1` start, `2` pause, `3` resume.
 
 ## `setCountdown(mode, minutes, seconds)`
-`[0x07, 0x00, 0x08, 0x80, mode, minutes, seconds]` — mode `0..3`, minutes `0..255`, seconds `0..59`.
+`[0x07, 0x00, 0x08, 0x80, mode, minutes, seconds]` - mode `0..3`, minutes `0..255`, seconds `0..59`.
 
 ## `setMicType(type)`
-`[0x06, 0x00, 0x0B, 0x80, type]` — `0` internal mic, `1` remote source.
+`[0x05, 0x00, 0x0B, 0x80, type]` - `0` internal mic, `1` remote source.
 
 ## `sendCustomRythm(style, rawHeights)`
 `[0x21, 0x00, 0x01, 0x02, style, ...16 packed bytes]`. The 32 heights 0..15 are packed two per byte (high/low nibbles).
 
 ## `sendImageRythm(animIndex, frame)`
-`[0x06, 0x00, 0x00, 0x02, frame, animIndex]` — frame `0..7`, animation `0..5`. `stopMusicRythm()` sends `(0, 0)`.
+`[0x06, 0x00, 0x00, 0x02, frame, animIndex]` - frame `0..7`, animation `0..5`. `stopMusicRythm()` sends `(0, 0)`.
 
 ## `setClockTime(date)`
 `[0x0B, 0x00, 0x01, 0x80, YY, MM, DD, weekday, hh, mm, ss]`. `weekday`: Monday=`1` ... Sunday=`7`.
@@ -125,35 +125,52 @@ The inner payload starts with:
 
 It is wrapped by:
 
-`[totalLen_LE16, 0x03, 0x00, 0x00, innerLen_LE32, crc32_LE32, 0x00, 0x00, slotIndex, ...innerPayload]`
+`[blockLen_LE16, 0x03, 0x00, continuation, innerLen_LE32, crc32_LE32, 0x00, 0x00, slotIndex, ...innerPayload]`
 
 Default slot is 12. The final stream is sent with a 25 ms delay between BLE fragments.
 
 ## `sendDIYImage(buffer)`
 PNG data is split into 4096-byte blocks. Each block:
 
-`[chunkLenPlus9_BE16, 0x00, 0x00, continuation, totalLen_BE32, ...chunk]`
+`[chunkLenPlus9_LE16, 0x00, 0x00, continuation, totalLen_LE32, ...chunk]`
 
 `continuation = 0x00` for the first block, otherwise `0x02`. Write delay: 35 ms between BLE fragments.
 
-## `sendImage(buffer, mode = 12)`
+## `sendImage(buffer, options = {})`
 PNG data is split into 4096-byte blocks. Each block:
 
-`[chunkLenPlus16_LE16, 0x02, 0x00, continuation, totalLen_LE32, crc32_LE32, duration_LE16, mode, ...chunk]`
+`[chunkLenPlus16_LE16, 0x02, 0x00, continuation, totalLen_LE32, crc32_LE32, duration_LE16, slotIndex, ...chunk]`
 
-`continuation = 0x00` for the first block, otherwise `0x02`. `mode=12` → duration `0`; modes `1..4` → `10`, `30`, `60`, `300` seconds.
+`continuation = 0x00` for the first block, otherwise `0x02`. `slotIndex=12` → `durationValue=0`.
 
-## `sendGif(buffer)`
+## `sendGif(buffer, options = {})`
 GIF data is split into 4096-byte blocks. Each block:
 
-`[chunkLenPlus16_LE16, 0x01, 0x00, continuation, totalLen_LE32, crc32_LE32, 0x05, 0x00, 0x0D, ...chunk]`
+`[chunkLenPlus16_LE16, 0x01, 0x00, continuation, totalLen_LE32, crc32_LE32, duration_LE16, slotIndex, ...chunk]`
 
-After each logical block, the class additionally waits 150 ms.
+BLE fragment delay: 10 ms. Continuation and completion are controlled by firmware ACKs.
 
 # BLE
 
 - Service UUID: `0x00FA`
 - Write characteristic: `0xFA02`
 - Notification characteristic: `0xFA03`
-- `send()` / `sendAsync()` currently fragment payloads into 20-byte chunks.
-- `detectMaxMtu()` probes 512/244/128/64/20 but does not modify the 20-byte fragmentation size.
+- `send()` : `fragmentSize` (20 bytes by default).
+
+## Blocks, responses and specifications
+
+All media, including text, use blocks of at most 4096 content bytes. `continuation` is 0 for the first block, then 2. CRC and total length describe the entire content, not a fragment. DIY has no CRC. GIF duration and slot are configurable (defaults 0 and 12); slot 12 always forces duration to zero.
+
+| Opcode bytes | Family | Continue | Terminal | Error |
+| --- | --- | --- | --- | --- |
+| `02 00` | image | 1 | 3 | 2 |
+| `01 00` | GIF | 1 | 3 | 0, 2 |
+| `03 00` | text | 1 | 3 | 2 |
+| `00 00` | DIY | 2 | 0, 1 | unknown |
+
+Opcodes occupy bytes 2–3 and status byte 4. Outside a text transfer, `03 00` also represents display status. `05 02` is ambiguous between PIN verification and drawing.
+
+### `requestDeviceInfo()`
+`04 00 01 80` → `[length_LE16, 01, 80, major, minor, screenOn, screenType, passwordProtected]` (9 bytes). `screenType`: 1 = 16×16, 3 = 32×32, 4 = 64×64. `mcuVersion = [major, minor]`.
+
+A 5–8 byte `01 80` response is decoded as `timeAck`, not firmware info. Unknown screen types do not change dimensions. Status mappings are experimental and firmware dependent; no universal transaction ID or persistence guarantee is established. See [transfers](sdk-transfers.md) and [BLE](ble.md).
